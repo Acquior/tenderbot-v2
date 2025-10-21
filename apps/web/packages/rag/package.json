@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "cohere-ai": "^7.19.0",
+    "zod": "^4.1.12"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@tenderbot/rag",
+  "version": "0.1.0",
+  "description": "RAG (Retrieval Augmented Generation) utilities for TenderBot",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src",
+    "clean": "rm -rf dist node_modules"
+  },
+  "dependencies": {
+    "@tenderbot/contracts": "*",
+    "cohere-ai": "^7.15.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

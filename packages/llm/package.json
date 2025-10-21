@@ -1,0 +1,29 @@
+{
+  "name": "@tenderbot/llm",
+  "version": "0.1.0",
+  "description": "LLM integration and routing for TenderBot",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src",
+    "clean": "rm -rf dist node_modules"
+  },
+  "dependencies": {
+    "@tenderbot/contracts": "*",
+    "openai": "^4.77.3",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

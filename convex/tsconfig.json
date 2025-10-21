@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2021",
+    "lib": ["ES2021"],
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "sourceMap": true,
+    "strict": true
+  },
+  "include": ["./**/*"],
+  "exclude": ["node_modules"]
+}
