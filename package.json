@@ -1,0 +1,25 @@
+{
+  "name": "tenderbot-monorepo",
+  "version": "0.1.0",
+  "description": "TenderBot: AI-powered tender analysis platform (greenfield rebuild)",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules dist"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

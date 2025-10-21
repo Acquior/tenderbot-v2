@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "strict": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tenderbot/contracts": ["packages/contracts/src/index.ts"],
+      "@tenderbot/llm": ["packages/llm/src/index.ts"],
+      "@tenderbot/rag": ["packages/rag/src/index.ts"]
+    }
+  },
+  "include": [],
+  "references": [
+    { "path": "./apps/web" },
+    { "path": "./packages/contracts" },
+    { "path": "./packages/llm" },
+    { "path": "./packages/rag" }
+  ]
+}
