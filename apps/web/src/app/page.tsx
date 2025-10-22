@@ -1,3 +1,7 @@
+"use client";
+
+import Link from "next/link";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +16,20 @@ export default function Home() {
             AI-Powered Tender Analysis & Opportunity Management
           </p>
           <div className="flex gap-4 justify-center">
-            <Button size="lg">Get Started</Button>
-            <Button size="lg" variant="outline">Learn More</Button>
+            <SignedOut>
+              <SignInButton mode="modal">
+                <Button size="lg">Sign In</Button>
+              </SignInButton>
+              <Button size="lg" variant="outline" asChild>
+                <Link href="/sign-up">Create account</Link>
+              </Button>
+            </SignedOut>
+            <SignedIn>
+              <Button size="lg" asChild>
+                <Link href="/app">Enter dashboard</Link>
+              </Button>
+              <UserButton afterSignOutUrl="/" />
+            </SignedIn>
           </div>
         </div>
 

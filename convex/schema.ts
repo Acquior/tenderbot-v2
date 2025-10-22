@@ -56,13 +56,15 @@ export default defineSchema({
     ),
     bundleId: v.optional(v.id("bundles")),
     createdBy: v.string(), // Clerk user ID
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
     .index("by_created_at", ["createdAt"])
     .index("by_created_by", ["createdBy"])
     .index("by_status", ["status"])
-    .index("by_bundle", ["bundleId"]),
+    .index("by_bundle", ["bundleId"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Chunks table
@@ -80,10 +82,12 @@ export default defineSchema({
       endOffset: v.optional(v.number()),
     }),
     embeddingId: v.optional(v.string()), // Reference to vector DB
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_document", ["documentId"])
-    .index("by_document_sequence", ["documentId", "sequence"]),
+    .index("by_document_sequence", ["documentId", "sequence"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Bundles table (tender document groups)
@@ -114,6 +118,7 @@ export default defineSchema({
       })
     ),
     createdBy: v.string(),
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
@@ -121,7 +126,8 @@ export default defineSchema({
     .index("by_created_by", ["createdBy"])
     .index("by_status", ["status"])
     .index("by_issuer", ["issuer"])
-    .index("by_due_date", ["dueDate"]),
+    .index("by_due_date", ["dueDate"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Opportunities table
@@ -156,6 +162,7 @@ export default defineSchema({
       })
     ),
     createdBy: v.string(),
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
@@ -163,7 +170,8 @@ export default defineSchema({
     .index("by_created_by", ["createdBy"])
     .index("by_status", ["status"])
     .index("by_due_date", ["dueDate"])
-    .index("by_issuer", ["issuer"]),
+    .index("by_issuer", ["issuer"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Requirements table
@@ -190,10 +198,12 @@ export default defineSchema({
     confidence: v.optional(v.number()),
     notes: v.optional(v.string()),
     createdAt: v.number(),
+    organizationId: v.optional(v.string()),
   })
     .index("by_opportunity", ["opportunityId"])
     .index("by_type", ["type"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Analyses table
@@ -218,11 +228,13 @@ export default defineSchema({
     ),
     version: v.string(),
     createdBy: v.string(),
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_target", ["targetId"])
     .index("by_type", ["type"])
-    .index("by_created_at", ["createdAt"]),
+    .index("by_created_at", ["createdAt"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Jobs table (background tasks)
@@ -268,6 +280,7 @@ export default defineSchema({
     maxAttempts: v.number(),
     resumeToken: v.optional(v.string()),
     createdBy: v.string(),
+    organizationId: v.optional(v.string()),
     createdAt: v.number(),
     startedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
@@ -276,7 +289,8 @@ export default defineSchema({
     .index("by_type", ["type"])
     .index("by_status", ["status"])
     .index("by_created_at", ["createdAt"])
-    .index("by_scheduled_for", ["scheduledFor"]),
+    .index("by_scheduled_for", ["scheduledFor"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Notifications table

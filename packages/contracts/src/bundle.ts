@@ -46,6 +46,7 @@ export const BundleSchema = z.object({
     })
     .optional(),
   createdBy: z.string(),
+  organizationId: z.string().optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int().optional(),
 });

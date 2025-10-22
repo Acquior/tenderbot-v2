@@ -66,6 +66,7 @@ export const AnalysisSchema = z.object({
     })
     .optional(),
   createdBy: z.string(),
+  organizationId: z.string().optional(),
   createdAt: z.number().int(),
   version: z.string().default("1.0"),
 });

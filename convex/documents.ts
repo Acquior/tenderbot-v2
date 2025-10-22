@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { getOptionalUser, requireUser } from "./auth";
 
 /**
  * List documents for the authenticated user
@@ -10,24 +11,41 @@ export const list = query({
     bundleId: v.optional(v.id("bundles")),
   },
   handler: async (ctx, args) => {
-    // TODO: Get user ID from Clerk auth
-    // const identity = await ctx.auth.getUserIdentity();
-    // if (!identity) throw new Error("Not authenticated");
+    const identity = await getOptionalUser(ctx);
 
-    let documentsQuery = ctx.db.query("documents");
-
-    if (args.bundleId) {
-      documentsQuery = documentsQuery
-        .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId));
-    } else {
-      documentsQuery = documentsQuery.withIndex("by_created_at");
+    if (!identity) {
+      return [];
     }
+
+    const documentsQuery = args.bundleId
+      ? ctx.db
+          .query("documents")
+          .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+      : identity.organizationId
+          ? ctx.db
+              .query("documents")
+              .withIndex("by_organization", (q) =>
+                q.eq("organizationId", identity.organizationId as string)
+              )
+          : ctx.db
+              .query("documents")
+              .withIndex("by_created_by", (q) => q.eq("createdBy", identity.clerkUserId));
 
     const documents = await documentsQuery
       .order("desc")
       .take(args.limit ?? 50);
 
-    return documents;
+    return documents.filter((doc) => {
+      if (doc.createdBy === identity.clerkUserId) {
+        return true;
+      }
+
+      if (identity.organizationId && doc.organizationId === identity.organizationId) {
+        return true;
+      }
+
+      return false;
+    });
   },
 });
 
@@ -54,8 +72,7 @@ export const create = mutation({
     bundleId: v.optional(v.id("bundles")),
   },
   handler: async (ctx, args) => {
-    // TODO: Get user ID from Clerk auth
-    const createdBy = "user_placeholder"; // Replace with actual Clerk user ID
+    const identity = await requireUser(ctx);
 
     const documentId = await ctx.db.insert("documents", {
       filename: args.filename,
@@ -65,7 +82,8 @@ export const create = mutation({
       status: "uploaded",
       checksums: {},
       bundleId: args.bundleId,
-      createdBy,
+      createdBy: identity.clerkUserId,
+      organizationId: identity.organizationId,
       createdAt: Date.now(),
     });
 
@@ -105,9 +123,17 @@ export const updateStatus = mutation({
 export const remove = mutation({
   args: { id: v.id("documents") },
   handler: async (ctx, args) => {
+    const identity = await requireUser(ctx);
     const document = await ctx.db.get(args.id);
     if (!document) {
       throw new Error("Document not found");
+    }
+
+    if (
+      document.createdBy !== identity.clerkUserId &&
+      document.organizationId !== identity.organizationId
+    ) {
+      throw new Error("Forbidden");
     }
 
     // TODO: Also delete the file from storage

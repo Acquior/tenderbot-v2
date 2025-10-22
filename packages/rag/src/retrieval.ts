@@ -138,10 +138,11 @@ export class Retriever {
   static expandContext(
     results: RetrievalResult[],
     allChunks: Map<string, RetrievalResult>,
-    windowSize: number = 1
+    _windowSize: number = 1
   ): RetrievalResult[] {
     const expanded: RetrievalResult[] = [];
     const seen = new Set<string>();
+    void _windowSize;
 
     for (const result of results) {
       // Add the result itself

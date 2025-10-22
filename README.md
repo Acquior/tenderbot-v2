@@ -9,7 +9,7 @@ AI-powered tender analysis and opportunity management platform. Built with Conve
 - **Auth**: Clerk
 - **AI/LLM**: OpenAI GPT-4.1/GPT-5 (Responses API), Cohere embeddings, Cohere Rerank
 - **Storage**: Convex File Storage (primary), Cloudflare R2 (large files)
-- **Vector DB**: Supabase Postgres + pgvector
+- **Vector DB**: Convex collections for embeddings (hybrid search planned)
 - **Infra**: Vercel (frontend), GitHub Actions (CI/CD)
 
 ## Repository Structure
@@ -70,6 +70,7 @@ npm run build
 ## Features
 
 ### Core Functionality (M1-M2)
+- Authenticated workspace shell (Clerk + shadcn/ui navigation)
 - Multi-file tender bundle ingestion
 - Document hygiene & duplicate detection
 - OCR with selective fallback
@@ -79,6 +80,7 @@ npm run build
 - Requirement matrix with status tracking
 - Risk scoring & gap analysis
 - Knowledge chat with RAG + citations
+- Convex ingestion pipeline with durable job orchestration
 
 ### Collaboration (M5)
 - Anchored comments & @mentions
@@ -97,23 +99,27 @@ npm run build
 See `apps/web/.env.example` and `convex/.env.example` for required variables.
 
 ```env
-# Core APIs
+# Core APIs (Azure example)
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=gpt-4-1-deployment
+OPENAI_API_VERSION=2024-02-15-preview
+
+# Core APIs (optional direct OpenAI / other providers)
 OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=
 COHERE_API_KEY=...
 
 # Auth
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...
 CLERK_SECRET_KEY=...
+NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud
 
 # Storage
 CF_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=...
-
-# Database
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
 
 # Observability
 SENTRY_DSN=...

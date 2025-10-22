@@ -40,6 +40,7 @@ export const DocumentSchema = z.object({
     })
     .optional(),
   createdBy: z.string(), // Clerk user ID
+  organizationId: z.string().optional(),
   createdAt: z.number().int(), // Unix timestamp
   updatedAt: z.number().int().optional(),
   bundleId: z.string().optional(), // Link to tender bundle
@@ -66,6 +67,7 @@ export const DocumentUploadResponseSchema = z.object({
   uploadUrl: z.string().url(),
   storageId: z.string(),
   documentId: z.string(),
+  jobId: z.string().optional(),
 });
 
 export type DocumentUploadResponse = z.infer<typeof DocumentUploadResponseSchema>;

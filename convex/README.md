@@ -5,11 +5,11 @@ This directory contains the Convex backend for TenderBot.
 ## Structure
 
 - `schema.ts` - Database schema definitions
-- `documents.ts` - Document CRUD operations
-- `storage.ts` - File storage functions
-- `opportunities.ts` - Opportunity management
-- `jobs.ts` - Background job processing
-- `auth.ts` - Authentication and authorization
+- `auth.ts` - Clerk session helpers for Convex
+- `documents.ts` - Document CRUD and status management
+- `storage.ts` - File storage helpers
+- `jobs.ts` - Ingestion pipeline orchestration (Convex jobs + scheduler)
+- `opportunities.ts` - Opportunity CRUD scaffolding
 
 ## Development
 
@@ -32,6 +32,4 @@ if (!identity) throw new Error("Not authenticated");
 
 ## Background Jobs
 
-Long-running tasks (OCR, embeddings, analysis) are handled as background jobs using Convex scheduled functions.
-
-See `jobs.ts` for job processing logic.
+Long-running tasks (OCR, embeddings, analysis) are coordinated via Convex scheduled functions. See `jobs.ts` for the ingestion pipeline skeleton that updates document status through detection, OCR, chunking, embeddings, and finalization stages.

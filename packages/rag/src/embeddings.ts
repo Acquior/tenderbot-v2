@@ -24,7 +24,11 @@ export class EmbeddingClient {
         embeddingTypes: ["float"],
       });
 
-      return response.embeddings.float ?? [];
+      const vectorData = Array.isArray(response.embeddings)
+        ? response.embeddings
+        : response.embeddings?.float;
+
+      return vectorData ?? [];
     } catch (error) {
       console.error("Error generating embeddings:", error);
       throw new Error(`Failed to generate embeddings: ${(error as Error).message}`);

@@ -59,6 +59,7 @@ export const JobSchema = z.object({
   maxAttempts: z.number().int().positive().default(3),
   resumeToken: z.string().optional(), // For resumable jobs
   createdBy: z.string(),
+  organizationId: z.string().optional(),
   createdAt: z.number().int(),
   startedAt: z.number().int().optional(),
   finishedAt: z.number().int().optional(),

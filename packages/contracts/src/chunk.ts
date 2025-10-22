@@ -17,6 +17,7 @@ export const ChunkSchema = z.object({
     endOffset: z.number().int().optional(),
   }),
   embeddingId: z.string().optional(), // Reference to vector DB
+  organizationId: z.string().optional(),
   createdAt: z.number().int(),
 });
 

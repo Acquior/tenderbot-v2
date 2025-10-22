@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "TenderBot: AI-powered tender analysis platform (greenfield rebuild)",
   "private": true,
+  "packageManager": "bun@1.2.21",
   "workspaces": [
     "apps/web",
     "packages/*"
@@ -16,8 +17,11 @@
     "clean": "turbo run clean && rm -rf node_modules dist"
   },
   "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "convex": "^1.15.1",
     "turbo": "^2.0.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.11.0"
   },
   "engines": {
     "node": ">=18.17"
