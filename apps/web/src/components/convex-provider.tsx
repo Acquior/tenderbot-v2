@@ -12,9 +12,7 @@ function getConvexClient(url: string): ConvexReactClient {
     return convexClient;
   }
 
-  convexClient = new ConvexReactClient(url, {
-    fetchImplementation: typeof window === "undefined" ? undefined : fetch,
-  });
+  convexClient = new ConvexReactClient(url);
 
   return convexClient;
 }

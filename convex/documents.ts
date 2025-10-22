@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { getOptionalUser, requireUser } from "./auth";
 
 /**
@@ -55,7 +55,20 @@ export const list = query({
 export const get = query({
   args: { id: v.id("documents") },
   handler: async (ctx, args) => {
+    const identity = await requireUser(ctx);
     const document = await ctx.db.get(args.id);
+    if (!document) {
+      return null;
+    }
+
+    const authorized =
+      document.createdBy === identity.clerkUserId ||
+      (identity.organizationId && document.organizationId === identity.organizationId);
+
+    if (!authorized) {
+      throw new Error("Forbidden");
+    }
+
     return document;
   },
 });
@@ -92,11 +105,12 @@ export const create = mutation({
 });
 
 /**
- * Update document status
+ * Internal helper to update document status.
+ * Only callable from Convex actions/mutations via `internal`.
  */
-export const updateStatus = mutation({
+export const updateStatusInternal = internalMutation({
   args: {
-    id: v.id("documents"),
+    documentId: v.id("documents"),
     status: v.union(
       v.literal("uploading"),
       v.literal("uploaded"),
@@ -110,7 +124,12 @@ export const updateStatus = mutation({
     ),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.id, {
+    const document = await ctx.db.get(args.documentId);
+    if (!document) {
+      throw new Error("Document not found");
+    }
+
+    await ctx.db.patch(args.documentId, {
       status: args.status,
       updatedAt: Date.now(),
     });

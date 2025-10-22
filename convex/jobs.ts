@@ -81,7 +81,7 @@ export const processDocumentIngestion = internalAction({
       for (let index = 0; index < steps.length; index++) {
         const { message, status } = steps[index];
 
-        await ctx.runMutation(internal.jobs.updateDocumentStatusInternal, {
+        await ctx.runMutation(internal.documents.updateStatusInternal, {
           documentId: args.documentId,
           status,
         });
@@ -101,7 +101,7 @@ export const processDocumentIngestion = internalAction({
         output: { documentId: args.documentId },
       });
     } catch (error) {
-      await ctx.runMutation(internal.jobs.updateDocumentStatusInternal, {
+      await ctx.runMutation(internal.documents.updateStatusInternal, {
         documentId: args.documentId,
         status: "failed",
       });
@@ -124,26 +124,6 @@ const DOCUMENT_STATUSES = [
   "ready",
   "failed",
 ] as const;
-
-export const updateDocumentStatusInternal = internalMutation({
-  args: {
-    documentId: v.id("documents"),
-    status: v.union(
-      v.literal("processing"),
-      v.literal("ocr_in_progress"),
-      v.literal("chunking"),
-      v.literal("embedding"),
-      v.literal("ready"),
-      v.literal("failed")
-    ),
-  },
-  handler: async (ctx, args) => {
-    await ctx.db.patch(args.documentId, {
-      status: args.status,
-      updatedAt: Date.now(),
-    });
-  },
-});
 
 export const markJobStarted = internalMutation({
   args: {
