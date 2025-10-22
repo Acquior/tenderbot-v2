@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useMutation, useQuery } from "convex/react";
+import { Upload, Activity, FolderCheck, Shield } from "lucide-react";
 import { api } from "@convex/_generated/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type { Id } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 interface UploadState {
@@ -14,18 +16,76 @@ interface UploadState {
   message?: string;
 }
 
+type DocumentsListArgs = {
+  limit?: number;
+  bundleId?: Id<"bundles">;
+};
+
 export default function DocumentsPage() {
   const { isLoaded, isSignedIn } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadState, setUploadState] = useState<UploadState | null>(null);
 
-  const documents = useQuery(api.documents.list, isLoaded && isSignedIn ? { limit: 50 } : undefined);
+  const documentsArgs: DocumentsListArgs | "skip" =
+    isLoaded && isSignedIn ? { limit: 50 } : "skip";
+
+  const documents = useQuery(api.documents.list, documentsArgs);
+
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const createDocument = useMutation(api.documents.create);
   const enqueueIngestion = useMutation(api.jobs.enqueueDocumentIngestion);
 
+  const pipelineCount =
+    documents?.filter((doc) => doc.status !== "ready" && doc.status !== "failed").length ?? 0;
+  const totalSize = documents?.reduce((total, doc) => total + doc.size, 0) ?? 0;
+
+  const canUpload = isSignedIn;
+
+  const stats = useMemo(
+    () => [
+      {
+        title: "Processing Pipeline",
+        metric: pipelineCount.toString(),
+        description:
+          "OCR, chunking, and embeddings tracked in real time with retry logic",
+        icon: Activity,
+      },
+      {
+        title: "Bundle Management",
+        metric: (documents?.length ?? 0).toString(),
+        description: "Automatic grouping with duplicate detection and completeness tracking",
+        icon: FolderCheck,
+      },
+      {
+        title: "Storage & Security",
+        metric: totalSize ? formatFileSize(totalSize) : "—",
+        description: "Secure storage with org-level access control and audit logging",
+        icon: Shield,
+      },
+    ],
+    [documents?.length, pipelineCount, totalSize]
+  );
+
   const handleUploadClick = () => {
-    fileInputRef.current?.click();
+    if (!isSignedIn) {
+      setUploadState({
+        filename: "",
+        status: "error",
+        message: "Sign in to upload documents.",
+      });
+      return;
+    }
+
+    if (!fileInputRef.current) {
+      setUploadState({
+        filename: "",
+        status: "error",
+        message: "File picker unavailable. Please reload and try again.",
+      });
+      return;
+    }
+
+    fileInputRef.current.click();
   };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -38,13 +98,12 @@ export default function DocumentsPage() {
       setUploadState({
         filename: "",
         status: "error",
-        message: "You must be signed in to upload documents.",
+        message: "Sign in to upload documents.",
       });
       return;
     }
 
     const selectedFiles = Array.from(files);
-
     let lastFileName = "";
 
     try {
@@ -79,8 +138,11 @@ export default function DocumentsPage() {
         });
 
         await enqueueIngestion({ documentId });
-
-        setUploadState({ filename: file.name, status: "success", message: "Ingestion queued" });
+        setUploadState({
+          filename: file.name,
+          status: "success",
+          message: "Upload complete — ingestion queued.",
+        });
       }
     } catch (error) {
       console.error("Failed to upload document", error);
@@ -93,133 +155,149 @@ export default function DocumentsPage() {
     }
   };
 
-  const renderStatusBadge = (status: string | undefined) => {
-    if (!status) return null;
-
-    const variant = status === "ready" ? "secondary" : status === "failed" ? "destructive" : "outline";
-    return <Badge variant={variant}>{status.replaceAll("_", " ")}</Badge>;
-  };
-
   if (!isLoaded) {
-    return <p className="text-sm text-muted-foreground">Loading authentication...</p>;
+    return (
+      <div className="space-y-4">
+        <h2 className="text-2xl font-semibold tracking-tight">Documents</h2>
+        <p className="text-sm text-muted-foreground">Loading your workspace…</p>
+      </div>
+    );
   }
 
   if (!isSignedIn) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold">Documents</h1>
-        <p className="text-muted-foreground">
-          Sign in to upload tenders, track ingestion progress, and monitor pipeline health.
+        <h2 className="text-2xl font-semibold tracking-tight">Documents</h2>
+        <p className="text-sm text-muted-foreground">
+          Please sign in to upload tenders and track ingestion progress.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Documents</h1>
-          <p className="text-muted-foreground">
-            Upload tender documents, track ingestion progress, and monitor pipeline health in real time.
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h2 className="text-2xl font-semibold tracking-tight">Documents</h2>
+          <p className="text-sm text-muted-foreground">
+            Upload and manage your tender documents with automated processing
           </p>
         </div>
         <div className="flex items-center gap-3">
           <input
+            id="document-upload-input"
             ref={fileInputRef}
             type="file"
             accept="application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
-            className="hidden"
+            className="sr-only"
+            tabIndex={-1}
             onChange={handleFileChange}
+            multiple
           />
-          <Button onClick={handleUploadClick} disabled={uploadState?.status === "uploading"}>
-            {uploadState?.status === "uploading" ? "Uploading..." : "Upload files"}
+          <Button
+            type="button"
+            className="gap-2"
+            onClick={handleUploadClick}
+            disabled={uploadState?.status === "uploading" || !canUpload}
+            aria-describedby={uploadState?.message ? "upload-status" : undefined}
+          >
+            <Upload className="h-4 w-4" />
+            {uploadState?.status === "uploading" ? "Uploading…" : "Upload Documents"}
           </Button>
-          {uploadState?.message && (
-            <p
-              className={`text-sm ${
-                uploadState.status === "error" ? "text-destructive" : "text-muted-foreground"
-              }`}
-            >
-              {uploadState.message}
-            </p>
-          )}
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Pipeline Health</CardTitle>
-            <CardDescription>Durable ingestion stages with retries</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              <li>OCR, chunking, embeddings tracked per job</li>
-              <li>Selective OCR fallback queue</li>
-              <li>Real-time progress via Convex jobs</li>
-            </ul>
-          </CardContent>
-        </Card>
+      {uploadState?.message && (
+        <p
+          id="upload-status"
+          className={`text-sm ${
+            uploadState.status === "error" ? "text-destructive" : "text-muted-foreground"
+          }`}
+        >
+          {uploadState.message}
+        </p>
+      )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Bundle Completeness</CardTitle>
-            <CardDescription>Group related uploads automatically</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              <li>SimHash duplicate detection</li>
-              <li>Checklist coverage per opportunity</li>
-              <li>Due date risk alerts</li>
-            </ul>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Storage & Governance</CardTitle>
-            <CardDescription>Convex storage with optional R2 replication</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              <li>Signed URLs aligned with Clerk org access</li>
-              <li>Checksum tracking & retention policies</li>
-              <li>Observability hooks for cost & drift</li>
-            </ul>
-          </CardContent>
-        </Card>
+      <div className="grid gap-6 md:grid-cols-3">
+        {stats.map((stat) => {
+          const Icon = stat.icon;
+          return (
+            <Card key={stat.title} className="border-border/40">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
+                <Icon className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="text-2xl font-semibold">{stat.metric}</div>
+                <p className="text-xs text-muted-foreground leading-relaxed">{stat.description}</p>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      <Card>
+      <Card className="border-border/40">
         <CardHeader>
-          <CardTitle>Recent uploads</CardTitle>
-          <CardDescription>
-            {documents ? "Latest 50 documents across your organisation." : "Fetching documents..."}
-          </CardDescription>
+          <CardTitle className="text-base">Recent Documents</CardTitle>
         </CardHeader>
         <CardContent>
+          {!documents && (
+            <div className="flex items-center justify-center py-16">
+              <p className="text-sm text-muted-foreground">Fetching documents…</p>
+            </div>
+          )}
+
           {documents && documents.length === 0 && (
-            <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="h-12 w-12 rounded-lg bg-accent/50 flex items-center justify-center mb-4">
+                <Upload className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <p className="text-sm font-medium mb-1">No documents yet</p>
+              <p className="text-xs text-muted-foreground mb-4 max-w-sm">
+                Upload your first tender document to begin automated processing and analysis.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                type="button"
+                onClick={handleUploadClick}
+                disabled={uploadState?.status === "uploading" || !canUpload}
+              >
+                Upload Documents
+              </Button>
+            </div>
           )}
 
           {documents && documents.length > 0 && (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[600px] text-sm">
+              <table className="w-full min-w-[640px] text-sm">
                 <thead className="text-left text-muted-foreground">
                   <tr>
-                    <th className="py-2">Filename</th>
-                    <th className="py-2">Size</th>
-                    <th className="py-2">Status</th>
-                    <th className="py-2">Uploaded</th>
+                    <th className="py-2 font-medium">Filename</th>
+                    <th className="py-2 font-medium">Size</th>
+                    <th className="py-2 font-medium">Status</th>
+                    <th className="py-2 font-medium">Uploaded</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody className="divide-y divide-border/60">
                   {documents.map((document) => (
-                    <tr key={document._id} className="align-top">
+                    <tr key={document._id}>
                       <td className="py-3 font-medium text-foreground">{document.filename}</td>
                       <td className="py-3 text-muted-foreground">{formatFileSize(document.size)}</td>
-                      <td className="py-3">{renderStatusBadge(document.status)}</td>
+                      <td className="py-3">
+                        <Badge
+                          variant={
+                            document.status === "ready"
+                              ? "secondary"
+                              : document.status === "failed"
+                                ? "destructive"
+                                : "outline"
+                          }
+                        >
+                          {document.status.replaceAll("_", " ")}
+                        </Badge>
+                      </td>
                       <td className="py-3 text-muted-foreground">
                         {new Date(document.createdAt).toLocaleString()}
                       </td>

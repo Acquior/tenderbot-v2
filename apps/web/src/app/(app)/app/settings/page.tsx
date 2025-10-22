@@ -1,46 +1,85 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Shield, Plug, Bell, Users } from "lucide-react";
 
 export default function SettingsPage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-muted-foreground">
-          Manage workspace access, notifications, model routing, and observability integrations.
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="space-y-1">
+        <h2 className="text-2xl font-semibold tracking-tight">Settings</h2>
+        <p className="text-sm text-muted-foreground">
+          Manage workspace configuration, access control, and integrations
         </p>
       </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Access Control</CardTitle>
-            <CardDescription>Clerk org/team mappings to Convex row-level security</CardDescription>
+
+      {/* Settings Grid */}
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* Access Control */}
+        <Card className="border-border/40">
+          <CardHeader className="pb-4">
+            <div className="h-10 w-10 rounded-lg bg-accent/50 flex items-center justify-center mb-3">
+              <Shield className="h-5 w-5 text-accent-foreground" />
+            </div>
+            <CardTitle className="text-base">Access Control</CardTitle>
           </CardHeader>
-          <CardContent>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              <li>Role-based permissions (admin, user, viewer)</li>
-              <li>Row-level rules enforced per bundle/opportunity</li>
-              <li>Audit trail with model fingerprints</li>
-            </ul>
+          <CardContent className="space-y-3 text-xs text-muted-foreground leading-relaxed">
+            <p>• Role-based permissions with granular access levels</p>
+            <p>• Row-level security enforced per organization</p>
+            <p>• Comprehensive audit trail with change tracking</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Integrations</CardTitle>
-            <CardDescription>Telemetry and storage providers</CardDescription>
+
+        {/* Team Management */}
+        <Card className="border-border/40">
+          <CardHeader className="pb-4">
+            <div className="h-10 w-10 rounded-lg bg-accent/50 flex items-center justify-center mb-3">
+              <Users className="h-5 w-5 text-accent-foreground" />
+            </div>
+            <CardTitle className="text-base">Team Management</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <div className="flex items-center justify-between">
-              <span>Sentry</span>
-              <Badge variant="secondary">Planned</Badge>
+          <CardContent className="space-y-3 text-xs text-muted-foreground leading-relaxed">
+            <p>• Invite team members with role assignment</p>
+            <p>• Organization-based access control</p>
+            <p>• Activity monitoring and user analytics</p>
+          </CardContent>
+        </Card>
+
+        {/* Notifications */}
+        <Card className="border-border/40">
+          <CardHeader className="pb-4">
+            <div className="h-10 w-10 rounded-lg bg-accent/50 flex items-center justify-center mb-3">
+              <Bell className="h-5 w-5 text-accent-foreground" />
             </div>
-            <div className="flex items-center justify-between">
-              <span>Langfuse</span>
-              <Badge variant="secondary">Planned</Badge>
+            <CardTitle className="text-base">Notifications</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs text-muted-foreground leading-relaxed">
+            <p>• Document processing status updates</p>
+            <p>• Analysis completion alerts</p>
+            <p>• Deadline warnings and reminders</p>
+          </CardContent>
+        </Card>
+
+        {/* Integrations */}
+        <Card className="border-border/40">
+          <CardHeader className="pb-4">
+            <div className="h-10 w-10 rounded-lg bg-accent/50 flex items-center justify-center mb-3">
+              <Plug className="h-5 w-5 text-accent-foreground" />
             </div>
-            <div className="flex items-center justify-between">
-              <span>Cloudflare R2</span>
-              <Badge variant="secondary">Planned</Badge>
+            <CardTitle className="text-base">Integrations</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Sentry</span>
+              <Badge variant="secondary" className="text-xs">Planned</Badge>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Langfuse</span>
+              <Badge variant="secondary" className="text-xs">Planned</Badge>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Cloudflare R2</span>
+              <Badge variant="secondary" className="text-xs">Planned</Badge>
             </div>
           </CardContent>
         </Card>
