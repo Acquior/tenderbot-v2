@@ -63,6 +63,7 @@ export class StructuredOutputClient {
     const startTime = Date.now();
     const modelConfig = request.model || this.router.selectModel(request.options);
     const maxRetries = request.options?.maxRetries ?? 3;
+    const isAzure = Boolean(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_DEPLOYMENT);
 
     let lastError: Error | null = null;
 
@@ -74,6 +75,62 @@ export class StructuredOutputClient {
           $refStrategy: "none",
         }) as Record<string, unknown>;
 
+        const effectiveModel = process.env.AZURE_OPENAI_DEPLOYMENT ?? modelConfig.model;
+
+        if (isAzure) {
+          // Use Azure Chat Completions with response_format: json_schema
+          const chatResponse = await this.openai.chat.completions.create({
+            model: effectiveModel,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a structured extraction assistant. Respond with a valid JSON object only. Do not include any text outside JSON.",
+              },
+              { role: "user", content: `${request.prompt}\n\nReturn a JSON object.` },
+            ],
+            response_format: { type: "json_object" },
+            temperature: modelConfig.temperature ?? 0.1,
+            max_tokens: modelConfig.maxTokens ?? 4096,
+          } as any);
+
+          const content = chatResponse.choices?.[0]?.message?.content;
+          if (!content) {
+            throw new Error("No content in chat completion response");
+          }
+
+          const parsed = JSON.parse(content);
+          const validated = request.schema.parse(parsed);
+
+          const latencyMs = Date.now() - startTime;
+          const usage = (chatResponse as any).usage;
+
+          return {
+            data: validated,
+            metadata: {
+              model: effectiveModel,
+              provider: modelConfig.provider,
+              tokensUsed: usage
+                ? {
+                    prompt: usage.prompt_tokens,
+                    completion: usage.completion_tokens,
+                    total: usage.total_tokens,
+                  }
+                : undefined,
+              cost: usage
+                ? this.router.estimateCost(
+                    modelConfig.provider,
+                    usage.prompt_tokens,
+                    usage.completion_tokens
+                  )
+                : undefined,
+              latencyMs,
+              finishReason: chatResponse.choices?.[0]?.finish_reason,
+            },
+          };
+        }
+
+        // Default: use OpenAI Responses API
         const requestInput = [
           {
             role: "user" as const,
@@ -90,10 +147,7 @@ export class StructuredOutputClient {
           },
         } satisfies ResponseCreateParamsBase["text"];
 
-        // Call OpenAI with structured output configuration
-        const effectiveModel = process.env.AZURE_OPENAI_DEPLOYMENT ?? modelConfig.model;
-
-        const response = await this.openai.responses.create({
+        const resp = await this.openai.responses.create({
           model: effectiveModel,
           input: requestInput,
           text: textConfig,
@@ -101,17 +155,16 @@ export class StructuredOutputClient {
           max_output_tokens: modelConfig.maxTokens ?? 4096,
         });
 
-        const content = response.output_text;
-        if (!content) {
+        const output = resp.output_text;
+        if (!output) {
           throw new Error("No content in response");
         }
 
-        // Parse and validate with Zod
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(output);
         const validated = request.schema.parse(parsed);
 
         const latencyMs = Date.now() - startTime;
-        const tokensUsed = response.usage;
+        const tokensUsed = resp.usage;
 
         return {
           data: validated,
@@ -133,7 +186,7 @@ export class StructuredOutputClient {
                 )
               : undefined,
             latencyMs,
-            finishReason: response.status,
+            finishReason: resp.status,
           },
         };
       } catch (error) {
@@ -161,11 +214,66 @@ export class StructuredOutputClient {
   ): Promise<LLMResponse<z.infer<T>>> {
     const startTime = Date.now();
     const config = modelConfig || this.router.selectModel(options);
+    const isAzure = Boolean(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_DEPLOYMENT);
 
     const jsonSchema = zodToJsonSchema(schema, {
       name: "Response",
       $refStrategy: "none",
     }) as Record<string, unknown>;
+
+    const effectiveModel = process.env.AZURE_OPENAI_DEPLOYMENT ?? config.model;
+
+    if (isAzure) {
+      const chatResponse = await this.openai.chat.completions.create({
+        model: effectiveModel,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a structured extraction assistant. Respond with a valid JSON object only. Do not include any text outside JSON.",
+          },
+          ...messages.map((m) => ({ role: m.role, content: `${m.content}\n\nReturn a JSON object.` })),
+        ],
+        response_format: { type: "json_object" },
+        temperature: config.temperature ?? 0.1,
+        max_tokens: config.maxTokens ?? 4096,
+      } as any);
+
+      const content = chatResponse.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error("No content in chat completion response");
+      }
+
+      const parsed = JSON.parse(content);
+      const validated = schema.parse(parsed);
+
+      const latencyMs = Date.now() - startTime;
+      const usage = (chatResponse as any).usage;
+
+      return {
+        data: validated,
+        metadata: {
+          model: effectiveModel,
+          provider: config.provider,
+          tokensUsed: usage
+            ? {
+                prompt: usage.prompt_tokens,
+                completion: usage.completion_tokens,
+                total: usage.total_tokens,
+              }
+            : undefined,
+          cost: usage
+            ? this.router.estimateCost(
+                config.provider,
+                usage.prompt_tokens,
+                usage.completion_tokens
+              )
+            : undefined,
+          latencyMs,
+          finishReason: chatResponse.choices?.[0]?.finish_reason,
+        },
+      };
+    }
 
     const chatInput = messages.map((message) => ({
       role: message.role,
@@ -180,8 +288,6 @@ export class StructuredOutputClient {
         strict: true,
       },
     } satisfies ResponseCreateParamsBase["text"];
-
-    const effectiveModel = process.env.AZURE_OPENAI_DEPLOYMENT ?? config.model;
 
     const response = await this.openai.responses.create({
       model: effectiveModel,

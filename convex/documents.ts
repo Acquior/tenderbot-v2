@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { getOptionalUser, requireUser } from "./auth";
 
 /**
@@ -133,6 +133,45 @@ export const updateStatusInternal = internalMutation({
       status: args.status,
       updatedAt: Date.now(),
     });
+  },
+});
+
+/**
+ * Internal helper to update document metadata.
+ */
+export const updateMetadataInternal = internalMutation({
+  args: {
+    documentId: v.id("documents"),
+    metadata: v.object({
+      pageCount: v.optional(v.number()),
+      language: v.optional(v.string()),
+      ocrMethod: v.optional(v.union(v.literal("native"), v.literal("tesseract"), v.literal("azure"), v.literal("azure-read"), v.literal("google"))),
+      extractedAt: v.optional(v.string()),
+    }),
+  },
+  handler: async (ctx, args) => {
+    const document = await ctx.db.get(args.documentId);
+    if (!document) {
+      throw new Error("Document not found");
+    }
+
+    await ctx.db.patch(args.documentId, {
+      metadata: {
+        ...document.metadata,
+        ...args.metadata,
+      },
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/**
+ * Internal query to get document by ID (for actions)
+ */
+export const getInternal = internalQuery({
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.documentId);
   },
 });
 

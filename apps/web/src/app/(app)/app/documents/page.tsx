@@ -1,14 +1,15 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useMutation, useQuery } from "convex/react";
-import { Upload, Activity, FolderCheck, Shield } from "lucide-react";
+import { Upload, Activity, FolderCheck, Shield, RefreshCw, X, Package } from "lucide-react";
 import { api } from "@convex/_generated/api";
-import type { Id } from "@convex/_generated/dataModel";
+import type { Doc, Id } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 
 interface UploadState {
   filename: string;
@@ -34,7 +35,6 @@ export default function DocumentsPage() {
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const createDocument = useMutation(api.documents.create);
   const enqueueIngestion = useMutation(api.jobs.enqueueDocumentIngestion);
-
   const pipelineCount =
     documents?.filter((doc) => doc.status !== "ready" && doc.status !== "failed").length ?? 0;
   const totalSize = documents?.reduce((total, doc) => total + doc.size, 0) ?? 0;
@@ -270,45 +270,261 @@ export default function DocumentsPage() {
           )}
 
           {documents && documents.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] text-sm">
-                <thead className="text-left text-muted-foreground">
-                  <tr>
-                    <th className="py-2 font-medium">Filename</th>
-                    <th className="py-2 font-medium">Size</th>
-                    <th className="py-2 font-medium">Status</th>
-                    <th className="py-2 font-medium">Uploaded</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {documents.map((document) => (
-                    <tr key={document._id}>
-                      <td className="py-3 font-medium text-foreground">{document.filename}</td>
-                      <td className="py-3 text-muted-foreground">{formatFileSize(document.size)}</td>
-                      <td className="py-3">
-                        <Badge
-                          variant={
-                            document.status === "ready"
-                              ? "secondary"
-                              : document.status === "failed"
-                                ? "destructive"
-                                : "outline"
-                          }
-                        >
-                          {document.status.replaceAll("_", " ")}
-                        </Badge>
-                      </td>
-                      <td className="py-3 text-muted-foreground">
-                        {new Date(document.createdAt).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-3">
+              {documents.map((document) => (
+                <DocumentRow key={document._id} document={document} />
+              ))}
             </div>
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+type DocumentStatus = Doc<"documents">["status"];
+type JobStatus = Doc<"jobs">["status"];
+
+const STATUS_STAGE_LABELS: Record<DocumentStatus, string> = {
+  uploading: "Uploading",
+  uploaded: "Queued",
+  processing: "Detecting characteristics",
+  ocr_in_progress: "OCR in progress",
+  ocr_failed: "OCR failed",
+  chunking: "Chunking",
+  embedding: "Embedding",
+  ready: "Ready",
+  failed: "Failed",
+};
+
+const STATUS_BADGE_VARIANT: Partial<Record<DocumentStatus, "secondary" | "destructive" | "outline">> =
+  {
+    ready: "secondary",
+    failed: "destructive",
+    ocr_failed: "destructive",
+    uploading: "outline",
+    uploaded: "outline",
+    processing: "outline",
+    ocr_in_progress: "outline",
+    chunking: "outline",
+    embedding: "outline",
+  };
+
+const ACTIVE_JOB_STATUSES: JobStatus[] = ["running", "pending", "retrying"];
+
+function DocumentRow({ document }: { document: Doc<"documents"> }) {
+  const [retryPending, startRetry] = useTransition();
+  const [cancelPending, startCancel] = useTransition();
+
+  const jobs = useQuery(api.jobs.getJobsForDocument, { documentId: document._id });
+  const bundle = useQuery(
+    api.bundles.get,
+    document.bundleId ? { id: document.bundleId } : "skip"
+  );
+  const bundleJobs = useQuery(
+    api.jobs.getJobsForBundle,
+    document.bundleId ? { bundleId: document.bundleId } : "skip"
+  );
+
+  const retryJob = useMutation(api.jobs.retry);
+  const cancelJob = useMutation(api.jobs.cancel);
+
+  const sortedJobs = useMemo(() => {
+    if (!jobs) {
+      return [] as Doc<"jobs">[];
+    }
+
+    return [...jobs].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  }, [jobs]);
+
+  const activeJob = sortedJobs.find((job) => ACTIVE_JOB_STATUSES.includes(job.status));
+  const latestJob = sortedJobs[0];
+  const displayJob = activeJob ?? latestJob;
+  const failedJob = sortedJobs.find((job) => job.status === "failed");
+
+  const progress = displayJob?.progress;
+  const progressValue =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.current / progress.total) * 100))
+      : undefined;
+
+  const statusVariant =
+    STATUS_BADGE_VARIANT[document.status] ?? (document.status === "ready" ? "secondary" : "outline");
+  const stageLabel =
+    STATUS_STAGE_LABELS[document.status] ?? document.status.replaceAll("_", " ");
+
+  const handleRetry = () => {
+    if (!failedJob) {
+      return;
+    }
+
+    startRetry(async () => {
+      try {
+        await retryJob({ jobId: failedJob._id });
+      } catch (error) {
+        console.error("Failed to retry job", error);
+      }
+    });
+  };
+
+  const handleCancel = () => {
+    if (!activeJob) {
+      return;
+    }
+
+    startCancel(async () => {
+      try {
+        await cancelJob({ jobId: activeJob._id });
+      } catch (error) {
+        console.error("Failed to cancel job", error);
+      }
+    });
+  };
+
+  const bundleCompleteness =
+    bundle?.completeness?.score !== undefined
+      ? Math.round(bundle.completeness.score * 100)
+      : undefined;
+  const bundleDetectionLabel = bundle
+    ? bundle.metadata?.detectedAt
+      ? "Auto-detected"
+      : "Manual"
+    : "";
+
+  const canRetry = !!failedJob;
+  const canCancel = !!activeJob;
+
+  // Bundle analysis job
+  const bundleAnalysisJobs = bundleJobs
+    ? bundleJobs.filter((job) => job.type === "analyze_opportunity")
+    : [];
+  const activeBundleJob = bundleAnalysisJobs.find((job) =>
+    ACTIVE_JOB_STATUSES.includes(job.status)
+  );
+  const bundleProgress = activeBundleJob?.progress;
+  const bundleProgressValue =
+    bundleProgress && bundleProgress.total > 0
+      ? Math.min(100, Math.round((bundleProgress.current / bundleProgress.total) * 100))
+      : undefined;
+
+  return (
+    <div className="border border-border/40 rounded-lg p-4 space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex-1 min-w-0 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <p className="font-medium text-sm truncate text-foreground">{document.filename}</p>
+            {bundle && (
+              <Badge variant="outline" className="gap-1 flex-shrink-0">
+                <Package className="h-3 w-3" />
+                {bundle.name}
+              </Badge>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+            <span>{formatFileSize(document.size)}</span>
+            <span>{new Date(document.createdAt).toLocaleString()}</span>
+            {document.metadata?.pageCount && <span>{document.metadata.pageCount} pages</span>}
+            {document.metadata?.ocrMethod && (
+              <span className="capitalize">
+                {document.metadata.ocrMethod.replace("-", " ")} extraction
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Badge variant={statusVariant}>{stageLabel}</Badge>
+          {canRetry && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1"
+              onClick={handleRetry}
+              disabled={retryPending}
+            >
+              <RefreshCw className="h-3 w-3" />
+              Retry
+            </Button>
+          )}
+          {canCancel && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1"
+              onClick={handleCancel}
+              disabled={cancelPending}
+            >
+              <X className="h-3 w-3" />
+              Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {displayJob && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>{displayJob.progress?.message ?? "Processing…"}</span>
+            {progress && (
+              <span>
+                {progress.current} / {progress.total}
+              </span>
+            )}
+          </div>
+          {progressValue !== undefined && (
+            <Progress value={progressValue} className="h-1.5" aria-label="Ingestion progress" />
+          )}
+          {displayJob.status === "failed" && displayJob.error?.message && (
+            <p className="text-xs text-destructive">{displayJob.error.message}</p>
+          )}
+        </div>
+      )}
+
+      {activeBundleJob && (
+        <div className="space-y-2 border-t border-border/40 pt-3">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="font-medium">Bundle Analysis</span>
+            {bundleProgress && (
+              <span>
+                {bundleProgress.current} / {bundleProgress.total}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>{bundleProgress?.message ?? "Analyzing…"}</span>
+          </div>
+          {bundleProgressValue !== undefined && (
+            <Progress
+              value={bundleProgressValue}
+              className="h-1.5"
+              aria-label="Bundle analysis progress"
+            />
+          )}
+          {activeBundleJob.status === "failed" && activeBundleJob.error?.message && (
+            <p className="text-xs text-destructive">{activeBundleJob.error.message}</p>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        {bundle ? (
+          <>
+            <span className="flex items-center gap-1">
+              <Badge variant="outline" className="uppercase">
+                {bundleDetectionLabel || "Manual"}
+              </Badge>
+              <span>Status: {bundle.status.replaceAll("_", " ")}</span>
+            </span>
+            {bundleCompleteness !== undefined && (
+              <span>Completeness: {bundleCompleteness}%</span>
+            )}
+          </>
+        ) : document.bundleId ? (
+          <span>Loading bundle details…</span>
+        ) : (
+          <span>No bundle detected</span>
+        )}
+      </div>
     </div>
   );
 }

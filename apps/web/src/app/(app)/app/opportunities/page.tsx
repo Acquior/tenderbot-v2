@@ -6,6 +6,7 @@ import { useMutation, useQuery } from "convex/react";
 import { Plus, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -243,7 +244,15 @@ export default function OpportunitiesPage() {
                 <tbody className="divide-y divide-border/60">
                   {opportunities.map((opportunity) => (
                     <tr key={opportunity._id}>
-                      <td className="py-3 font-medium text-foreground">{opportunity.title}</td>
+                      <td className="py-3 font-medium text-foreground">
+                        <Link
+                          href={`/app/opportunities/${opportunity._id}`}
+                          className="hover:underline"
+                          aria-label={`View opportunity ${opportunity.title}`}
+                        >
+                          {opportunity.title}
+                        </Link>
+                      </td>
                       <td className="py-3 text-muted-foreground">{opportunity.issuer}</td>
                       <td className="py-3">
                         <Badge

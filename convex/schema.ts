@@ -81,13 +81,17 @@ export default defineSchema({
       startOffset: v.optional(v.number()),
       endOffset: v.optional(v.number()),
     }),
-    embeddingId: v.optional(v.string()), // Reference to vector DB
+    embedding: v.array(v.number()), // 1536-dimensional vector from Cohere embed-v4
     organizationId: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_document", ["documentId"])
     .index("by_document_sequence", ["documentId", "sequence"])
-    .index("by_organization", ["organizationId"]),
+    .index("by_organization", ["organizationId"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1536,
+    }),
 
   /**
    * Bundles table (tender document groups)
@@ -115,6 +119,7 @@ export default defineSchema({
         totalSize: v.optional(v.number()),
         detectedAt: v.optional(v.number()),
         confidence: v.optional(v.number()),
+        bundleType: v.optional(v.string()),
       })
     ),
     createdBy: v.string(),
@@ -153,6 +158,32 @@ export default defineSchema({
       v.literal("closed")
     ),
     bundleId: v.optional(v.id("bundles")),
+    risks: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          category: v.union(
+            v.literal("eligibility"),
+            v.literal("bee_compliance"),
+            v.literal("financial"),
+            v.literal("technical"),
+            v.literal("timeline"),
+            v.literal("commercial"),
+            v.literal("legal")
+          ),
+          severity: v.union(
+            v.literal("low"),
+            v.literal("medium"),
+            v.literal("high"),
+            v.literal("critical")
+          ),
+          description: v.string(),
+          mitigation: v.optional(v.string()),
+          likelihood: v.optional(v.number()),
+          impact: v.optional(v.number()),
+        })
+      )
+    ),
     score: v.optional(
       v.object({
         overall: v.optional(v.number()),
@@ -169,6 +200,7 @@ export default defineSchema({
     .index("by_created_at", ["createdAt"])
     .index("by_created_by", ["createdBy"])
     .index("by_status", ["status"])
+    .index("by_bundle", ["bundleId"])
     .index("by_due_date", ["dueDate"])
     .index("by_issuer", ["issuer"])
     .index("by_organization", ["organizationId"]),
@@ -268,6 +300,7 @@ export default defineSchema({
         message: v.optional(v.string()),
       })
     ),
+    resumeData: v.optional(v.any()),
     error: v.optional(
       v.object({
         message: v.string(),
