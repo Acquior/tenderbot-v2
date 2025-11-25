@@ -62,6 +62,7 @@ export const insertBatch = internalMutation({
 
 /**
  * List all chunks for a document
+ * Note: Internal tool - all authenticated users can access any document's chunks
  */
 export const listByDocument = query({
   args: {
@@ -69,21 +70,7 @@ export const listByDocument = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
-
-    // Verify access to document
-    const document = await ctx.db.get(args.documentId);
-    if (!document) {
-      throw new Error("Document not found");
-    }
-
-    const hasAccess =
-      document.createdBy === identity.clerkUserId ||
-      (identity.organizationId && document.organizationId === identity.organizationId);
-
-    if (!hasAccess) {
-      throw new Error("Forbidden");
-    }
+    await requireUser(ctx);
 
     // Get chunks ordered by sequence
     const chunks = await ctx.db
@@ -97,19 +84,16 @@ export const listByDocument = query({
 
 /**
  * Vector similarity search across all chunks
+ * Note: Internal tool - no organization filtering needed
  */
 export const search = query({
   args: {
     queryEmbedding: v.array(v.number()),
     limit: v.optional(v.number()),
     documentId: v.optional(v.id("documents")),
-    organizationId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const identity = await getOptionalUser(ctx);
-
-    const shouldFilterByDocument = Boolean(args.documentId);
-    const organizationId = identity?.organizationId ?? args.organizationId;
+    await getOptionalUser(ctx);
 
     const searchOptions: {
       vector: number[];
@@ -120,20 +104,8 @@ export const search = query({
       limit: args.limit ?? 10,
     };
 
-    if (shouldFilterByDocument || organizationId) {
-      searchOptions.filter = (q) => {
-        const predicates = [];
-
-        if (shouldFilterByDocument && args.documentId) {
-          predicates.push(q.eq("documentId", args.documentId));
-        }
-
-        if (organizationId) {
-          predicates.push(q.eq("organizationId", organizationId));
-        }
-
-        return predicates.length === 1 ? predicates[0] : q.and(...predicates);
-      };
+    if (args.documentId) {
+      searchOptions.filter = (q) => q.eq("documentId", args.documentId);
     }
 
     const results = (await (ctx as any).vectorSearch("chunks", "by_embedding", searchOptions)) as Array<{
@@ -176,23 +148,90 @@ export const listByDocumentInternal = internalQuery({
 });
 
 /**
+ * LIGHTWEIGHT: List chunks without embedding field (bandwidth efficient)
+ * Use this when you only need text/metadata, not the vector embedding
+ * Note: Internal tool - all authenticated users can access any document's chunks
+ */
+export const listByDocumentLightweight = query({
+  args: {
+    documentId: v.id("documents"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+
+    const chunks = await ctx.db
+      .query("chunks")
+      .withIndex("by_document_sequence", (q) => q.eq("documentId", args.documentId))
+      .take(args.limit ?? 1000);
+
+    // Project only needed fields, EXCLUDE embedding (~12KB per chunk saved)
+    return chunks.map((chunk) => ({
+      _id: chunk._id,
+      documentId: chunk.documentId,
+      sequence: chunk.sequence,
+      text: chunk.text,
+      tokens: chunk.tokens,
+      metadata: chunk.metadata,
+      createdAt: chunk.createdAt,
+    }));
+  },
+});
+
+/**
+ * LIGHTWEIGHT: Internal query without embeddings (for jobs/analyses)
+ * Saves ~12KB bandwidth per chunk
+ */
+export const listByDocumentInternalLightweight = internalQuery({
+  args: {
+    documentId: v.id("documents"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const chunks = await ctx.db
+      .query("chunks")
+      .withIndex("by_document_sequence", (q) => q.eq("documentId", args.documentId))
+      .take(args.limit ?? 1000);
+
+    // Project only needed fields, EXCLUDE embedding
+    return chunks.map((chunk) => ({
+      _id: chunk._id,
+      documentId: chunk.documentId,
+      sequence: chunk.sequence,
+      text: chunk.text,
+      tokens: chunk.tokens,
+      metadata: chunk.metadata,
+      createdAt: chunk.createdAt,
+    }));
+  },
+});
+
+/**
  * Delete all chunks for a document
  * Internal mutation - called during document deletion or re-processing
+ * OPTIMIZED: Uses pagination to avoid loading all embedding data at once
  */
 export const deleteByDocument = internalMutation({
   args: {
     documentId: v.id("documents"),
   },
   handler: async (ctx, args) => {
-    const chunks = await ctx.db
-      .query("chunks")
-      .withIndex("by_document", (q) => q.eq("documentId", args.documentId))
-      .collect();
-
     let deletedCount = 0;
-    for (const chunk of chunks) {
-      await ctx.db.delete(chunk._id);
-      deletedCount++;
+
+    // Paginate deletion to avoid loading all chunks (with embeddings) into memory
+    // Each iteration only loads 100 chunks at a time
+    while (true) {
+      const chunks = await ctx.db
+        .query("chunks")
+        .withIndex("by_document", (q) => q.eq("documentId", args.documentId))
+        .take(100);
+
+      if (chunks.length === 0) break;
+
+      for (const chunk of chunks) {
+        await ctx.db.delete(chunk._id);
+        deletedCount++;
+      }
     }
 
     return { deletedCount };
@@ -201,66 +240,47 @@ export const deleteByDocument = internalMutation({
 
 /**
  * Get chunk count for a document
+ * OPTIMIZED: Uses pagination to count without loading all embedding data
+ * Note: Internal tool - all authenticated users can access any document's chunk count
  */
 export const countByDocument = query({
   args: {
     documentId: v.id("documents"),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
-    // Verify access
-    const document = await ctx.db.get(args.documentId);
-    if (!document) {
-      return 0;
+    // Count using pagination to avoid loading all embedding data
+    let count = 0;
+    let isDone = false;
+    let cursor: string | null = null;
+
+    while (!isDone) {
+      const result = await ctx.db
+        .query("chunks")
+        .withIndex("by_document", (q) => q.eq("documentId", args.documentId))
+        .paginate({ numItems: 100, cursor });
+
+      count += result.page.length;
+      isDone = result.isDone;
+      cursor = result.continueCursor;
     }
 
-    const hasAccess =
-      document.createdBy === identity.clerkUserId ||
-      (identity.organizationId && document.organizationId === identity.organizationId);
-
-    if (!hasAccess) {
-      throw new Error("Forbidden");
-    }
-
-    const chunks = await ctx.db
-      .query("chunks")
-      .withIndex("by_document", (q) => q.eq("documentId", args.documentId))
-      .collect();
-
-    return chunks.length;
+    return count;
   },
 });
 
 /**
  * Get a single chunk by ID
+ * Note: Internal tool - all authenticated users can access any chunk
  */
 export const get = query({
   args: {
     id: v.id("chunks"),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
     const chunk = await ctx.db.get(args.id);
-
-    if (!chunk) {
-      return null;
-    }
-
-    // Verify access via document
-    const document = await ctx.db.get(chunk.documentId);
-    if (!document) {
-      return null;
-    }
-
-    const hasAccess =
-      document.createdBy === identity.clerkUserId ||
-      (identity.organizationId && document.organizationId === identity.organizationId);
-
-    if (!hasAccess) {
-      throw new Error("Forbidden");
-    }
-
     return chunk;
   },
 });

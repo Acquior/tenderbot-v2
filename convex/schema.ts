@@ -54,6 +54,15 @@ export default defineSchema({
         ocrMethod: v.optional(v.string()),
       })
     ),
+    geminiFileResourceName: v.optional(v.string()), // Gemini File Search file resource name
+    geminiStatus: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("indexing"),
+        v.literal("ready"),
+        v.literal("error")
+      )
+    ),
     bundleId: v.optional(v.id("bundles")),
     createdBy: v.string(), // Clerk user ID
     organizationId: v.optional(v.string()),
@@ -158,6 +167,7 @@ export default defineSchema({
       v.literal("closed")
     ),
     bundleId: v.optional(v.id("bundles")),
+    analysisId: v.optional(v.id("analyses")),
     risks: v.optional(
       v.array(
         v.object({
@@ -210,6 +220,7 @@ export default defineSchema({
    */
   requirements: defineTable({
     opportunityId: v.id("opportunities"),
+    sourceAnalysisId: v.optional(v.id("analyses")),
     type: v.union(
       v.literal("compliance"),
       v.literal("technical"),
@@ -238,33 +249,42 @@ export default defineSchema({
     .index("by_organization", ["organizationId"]),
 
   /**
-   * Analyses table
+   * Analyses table (audit trail for tender analysis)
    */
   analyses: defineTable({
-    type: v.union(
-      v.literal("document"),
-      v.literal("opportunity"),
-      v.literal("bundle"),
-      v.literal("gap")
-    ),
-    targetId: v.string(), // documentId, opportunityId, or bundleId
-    summary: v.string(),
-    metadata: v.optional(
+    bundleId: v.optional(v.id("bundles")), // TEMPORARY: Made optional to allow bad data cleanup
+    status: v.optional(v.union(
+      v.literal("queued"),
+      v.literal("processing"),
+      v.literal("completed"),
+      v.literal("failed")
+    )),
+    model: v.optional(v.string()),
+    promptVersion: v.optional(v.string()),
+    inputBytes: v.optional(v.number()),
+    inputChars: v.optional(v.number()),
+    tokensIn: v.optional(v.number()),
+    tokensOut: v.optional(v.number()),
+    result: v.optional(v.any()), // Validated TenderAnalysis JSON
+    summary: v.optional(v.string()),
+    type: v.optional(v.string()),
+    version: v.optional(v.string()),
+    metadata: v.optional(v.any()),
+    targetId: v.optional(v.string()), // ID of the related bundle or opportunity
+    error: v.optional(
       v.object({
-        model: v.optional(v.string()),
-        tokensUsed: v.optional(v.number()),
-        cost: v.optional(v.number()),
-        latencyMs: v.optional(v.number()),
-        groundedness: v.optional(v.number()),
+        message: v.string(),
+        code: v.optional(v.string()),
+        stack: v.optional(v.string()),
       })
     ),
-    version: v.string(),
     createdBy: v.string(),
     organizationId: v.optional(v.string()),
     createdAt: v.number(),
+    completedAt: v.optional(v.number()),
   })
-    .index("by_target", ["targetId"])
-    .index("by_type", ["type"])
+    .index("by_bundle", ["bundleId"])
+    .index("by_status", ["status"])
     .index("by_created_at", ["createdAt"])
     .index("by_organization", ["organizationId"]),
 
@@ -318,12 +338,19 @@ export default defineSchema({
     startedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
     scheduledFor: v.optional(v.number()),
+    // OPTIMIZATION: Top-level fields for efficient indexed lookups
+    // (duplicated from input.documentId/input.bundleId for query performance)
+    documentId: v.optional(v.id("documents")),
+    bundleId: v.optional(v.id("bundles")),
   })
     .index("by_type", ["type"])
     .index("by_status", ["status"])
     .index("by_created_at", ["createdAt"])
     .index("by_scheduled_for", ["scheduledFor"])
-    .index("by_organization", ["organizationId"]),
+    .index("by_organization", ["organizationId"])
+    // OPTIMIZATION: Compound indexes for efficient job lookups
+    .index("by_type_document", ["type", "documentId"])
+    .index("by_type_bundle", ["type", "bundleId"]),
 
   /**
    * Notifications table
@@ -376,4 +403,14 @@ export default defineSchema({
     .index("by_target", ["targetType", "targetId"])
     .index("by_author", ["authorId"])
     .index("by_created_at", ["createdAt"]),
+
+  /**
+   * Config table (for storing system configuration like Gemini File Search store name)
+   */
+  config: defineTable({
+    key: v.string(),
+    value: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_key", ["key"]),
 });

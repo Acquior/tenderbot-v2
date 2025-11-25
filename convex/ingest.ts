@@ -4,6 +4,10 @@ import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import DocumentIntelligence from "@azure-rest/ai-document-intelligence";
 import { AzureKeyCredential } from "@azure/core-auth";
+import JSZip from "jszip";
+
+const DEFAULT_AZURE_MODEL = "prebuilt-read";
+const FALLBACK_AZURE_MODELS = ["prebuilt-document"];
 
 let pdfEnvironmentReady = false;
 
@@ -154,6 +158,8 @@ export const extractTextNative = internalAction({
 export const ocrWithAzure = internalAction({
   args: {
     storageId: v.string(),
+    mimeType: v.optional(v.string()),
+    filename: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<OCRResult> => {
     // Get Azure credentials from environment
@@ -180,6 +186,16 @@ export const ocrWithAzure = internalAction({
 
     const fileBuffer = await response.arrayBuffer();
 
+    const nonPdfResult = await extractTextWithoutAzure({
+      buffer: fileBuffer,
+      mimeType: args.mimeType,
+      filename: args.filename,
+    });
+
+    if (nonPdfResult) {
+      return nonPdfResult;
+    }
+
     try {
       // Initialize Azure Document Intelligence client
       const client = DocumentIntelligence(
@@ -187,17 +203,45 @@ export const ocrWithAzure = internalAction({
         new AzureKeyCredential(key)
       );
 
-      // Start OCR analysis using Read model
-      const initialResponse = await client.path("/documentModels/{modelId}:analyze", "prebuilt-read").post({
-        contentType: "application/pdf",
-        body: new Uint8Array(fileBuffer),
-        queryParameters: {
-          features: ["languages"],
-        },
-      });
+      const preferredModel = (process.env.AZURE_DOCUMENT_INTELLIGENCE_MODEL ?? DEFAULT_AZURE_MODEL).trim() || DEFAULT_AZURE_MODEL;
+      const modelCandidates = Array.from(new Set([preferredModel, ...FALLBACK_AZURE_MODELS]));
 
-      if (initialResponse.status !== "202") {
-        throw new Error(`Azure OCR failed to start: ${initialResponse.status}`);
+      let initialResponse: any = null;
+      let lastFailure: { model: string; status: string | number; detail?: string } | null = null;
+
+      for (const modelId of modelCandidates) {
+        const response = await client
+          .path("/documentModels/{modelId}:analyze", modelId)
+          .post({
+            contentType: "application/pdf",
+            body: new Uint8Array(fileBuffer),
+          });
+
+        if (Number(response.status) === 202) {
+          initialResponse = response;
+          break;
+        }
+
+        lastFailure = {
+          model: modelId,
+          status: response.status,
+          detail: formatAzureErrorResponse(response),
+        };
+
+        if (modelId !== modelCandidates[modelCandidates.length - 1]) {
+          console.warn(
+            `[Azure OCR] Model ${modelId} failed to start (status ${response.status}). Attempting fallback model.`
+          );
+        }
+      }
+
+      if (!initialResponse) {
+        const failureMessage = lastFailure
+          ? `Azure OCR failed to start (status ${lastFailure.status}, model ${lastFailure.model})${
+              lastFailure.detail ? ` - ${lastFailure.detail}` : ""
+            }`
+          : "Azure OCR failed to start: no response from service";
+        throw new Error(failureMessage);
       }
 
       // Get operation location for polling
@@ -304,4 +348,119 @@ export function normalizeText(text: string): string {
   normalized = deduped.join("\n");
 
   return normalized.trim();
+}
+
+function formatAzureErrorResponse(response: any): string | undefined {
+  if (!response) {
+    return undefined;
+  }
+
+  const body = (response as any).body;
+  if (!body) {
+    return undefined;
+  }
+
+  if (typeof body === "string") {
+    return body;
+  }
+
+  try {
+    return JSON.stringify(body);
+  } catch (error) {
+    return `Unable to parse Azure error body: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+interface ExtractionArgs {
+  buffer: ArrayBuffer;
+  mimeType?: string;
+  filename?: string;
+}
+
+async function extractTextWithoutAzure({ buffer, mimeType, filename }: ExtractionArgs): Promise<OCRResult | null> {
+  const normalizedMime = mimeType?.toLowerCase();
+  const extension = filename?.split(".").pop()?.toLowerCase();
+
+  if (normalizedMime?.startsWith("text/") || extension === "txt" || normalizedMime === "application/json") {
+    const decoder = new TextDecoder();
+    const text = decoder.decode(buffer);
+    if (!text.trim()) {
+      return null;
+    }
+    return {
+      text,
+      pageCount: estimatePageCountFromText(text),
+      ocrMethod: "native",
+    };
+  }
+
+  if (
+    normalizedMime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    extension === "docx"
+  ) {
+    const text = await extractDocxText(buffer);
+    return {
+      text,
+      pageCount: estimatePageCountFromText(text),
+      ocrMethod: "native",
+    };
+  }
+
+  return null;
+}
+
+async function extractDocxText(buffer: ArrayBuffer): Promise<string> {
+  const zip = await JSZip.loadAsync(buffer);
+  const documentFile = zip.file("word/document.xml");
+  if (!documentFile) {
+    throw new Error("DOCX file is missing document.xml section");
+  }
+
+  const xmlContent = await documentFile.async("string");
+  const paragraphs = xmlContent.split("</w:p>");
+  const textParts: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const matches = paragraph.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/g);
+    const pieces: string[] = [];
+    for (const match of matches) {
+      const raw = match[1] ?? "";
+      pieces.push(decodeXmlEntities(raw));
+    }
+    if (pieces.length > 0) {
+      textParts.push(pieces.join(""));
+    }
+  }
+
+  const cleaned = textParts
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n\n");
+
+  if (!cleaned.trim()) {
+    throw new Error("Unable to extract text content from DOCX file");
+  }
+
+  return cleaned;
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+}
+
+function estimatePageCountFromText(text: string): number {
+  if (!text.trim()) {
+    return 0;
+  }
+
+  const averageCharsPerPage = 1800;
+  const estimated = Math.max(1, Math.round(text.length / averageCharsPerPage));
+  return Number.isFinite(estimated) ? estimated : 1;
 }

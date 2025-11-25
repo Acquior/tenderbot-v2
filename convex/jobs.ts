@@ -9,7 +9,7 @@ import {
 } from "./_generated/server";
 import { requireUser } from "./auth";
 
-type StageId = "detect" | "ocr" | "chunk" | "embedding" | "finalize";
+type StageId = "detect" | "ocr" | "chunk" | "embedding" | "gemini_upload" | "finalize";
 
 interface ResumeChunk {
   sequence: number;
@@ -34,7 +34,16 @@ interface ResumeData {
 }
 
 const SHOULD_DETECT_CHARACTERISTICS = false;
-const TOTAL_STAGES = SHOULD_DETECT_CHARACTERISTICS ? 5 : 4;
+const USE_GEMINI_FILE_SEARCH = process.env.USE_GEMINI_FILE_SEARCH !== "false"; // Default to true
+const USE_GEMINI_FILE_SEARCH_ANALYSIS =
+  process.env.USE_GEMINI_FILE_SEARCH_ANALYSIS !== "false";
+const TOTAL_STAGES = SHOULD_DETECT_CHARACTERISTICS
+  ? USE_GEMINI_FILE_SEARCH
+    ? 6
+    : 5
+  : USE_GEMINI_FILE_SEARCH
+    ? 5
+    : 4;
 
 export const enqueueDocumentIngestion = mutation({
   args: {
@@ -53,7 +62,6 @@ export const enqueueDocumentIngestion = mutation({
 
     await ctx.db.patch(args.documentId, {
       status: "processing",
-      organizationId: document.organizationId ?? identity.organizationId,
       updatedAt: Date.now(),
     });
 
@@ -75,11 +83,12 @@ export const enqueueDocumentIngestion = mutation({
         completedStages: [],
       },
       createdBy: identity.clerkUserId,
-      organizationId: identity.organizationId,
       createdAt: Date.now(),
       startedAt: undefined,
       finishedAt: undefined,
       scheduledFor: undefined,
+      // OPTIMIZATION: Top-level field for indexed lookups
+      documentId: args.documentId,
     });
 
     await ctx.scheduler.runAfter(0, internal.jobs.processDocumentIngestion, {
@@ -212,6 +221,8 @@ export const processDocumentIngestion = internalAction({
 
         const azureResult = await ctx.runAction(internal.ingest.ocrWithAzure, {
           storageId: document.storageId,
+          mimeType: document.mimeType,
+          filename: document.filename,
         });
         const extractedText = azureResult.text;
         ocrMethod = (azureResult as any).ocrMethod ?? "azure-read";
@@ -331,8 +342,45 @@ export const processDocumentIngestion = internalAction({
         chunkCount = resumeData.chunkCount ?? chunkCount;
       }
 
-      // ==================== STAGE 5: FINALIZE ====================
-      await updateProgress(TOTAL_STAGES, "Finalizing document");
+      // ==================== STAGE 5: GEMINI FILE SEARCH (if enabled) ====================
+      if (USE_GEMINI_FILE_SEARCH && !completedStages.has("gemini_upload")) {
+        try {
+          await ctx.runMutation(internal.documents.updateGeminiMetadata, {
+            documentId: args.documentId,
+            geminiStatus: "indexing",
+          });
+          await updateProgress(USE_GEMINI_FILE_SEARCH ? 5 : 4, "Uploading to Gemini File Search");
+
+          const geminiResult = await ctx.runAction(internal.geminiFileSearch.uploadFileToGeminiStore, {
+            documentId: args.documentId,
+            bundleId: document.bundleId,
+            organizationId: document.organizationId,
+          });
+
+          await ctx.runMutation(internal.documents.updateGeminiMetadata, {
+            documentId: args.documentId,
+            geminiFileResourceName: geminiResult.fileResourceName,
+            geminiStatus: "ready",
+          });
+
+          completedStages.add("gemini_upload");
+          await saveResumeData({});
+        } catch (error) {
+          // Log error but don't fail the entire ingestion
+          console.error(`[Gemini File Search] Failed to upload document ${args.documentId}:`, error);
+          await ctx.runMutation(internal.documents.updateGeminiMetadata, {
+            documentId: args.documentId,
+            geminiStatus: "error",
+          });
+          // Continue with rest of ingestion
+          completedStages.add("gemini_upload");
+          await saveResumeData({});
+        }
+      }
+
+      // ==================== FINALIZE ====================
+      const finalStageNumber = USE_GEMINI_FILE_SEARCH ? 6 : 5;
+      await updateProgress(finalStageNumber, "Finalizing document");
 
       // IMPORTANT: Set document to "ready" BEFORE detecting bundle
       // so that bundle metadata sees the document as ready
@@ -355,26 +403,24 @@ export const processDocumentIngestion = internalAction({
         console.log(`[Bundle Analysis Check] Bundle ${bundleResult.bundleId} status: ${bundle?.status}`);
 
         if (bundle && bundle.status === "ready") {
-          // Check if analysis job already exists for this bundle
-          const existingJobs = await ctx.runQuery(internal.jobs.getJobsForBundleInternal, {
-            bundleId: bundle._id,
-          });
+          // Trigger new tender analysis system (idempotent)
+          console.log(`[Bundle Analysis] Starting analysis for bundle ${bundle._id}`);
 
-          const hasActiveJob = existingJobs.some(
-            (job: any) => job.status === "pending" || job.status === "running"
-          );
-
-          console.log(`[Bundle Analysis Check] Existing jobs: ${existingJobs.length}, hasActiveJob: ${hasActiveJob}`);
-
-          if (!hasActiveJob) {
-            console.log(`[Bundle Analysis] Enqueueing analysis for bundle ${bundle._id}`);
-            await ctx.runMutation(internal.jobs.enqueueBundleAnalysisInternal, {
+          try {
+            const analysisResult = await ctx.runAction(internal.analyses.startAnalysisForBundleInternal, {
               bundleId: bundle._id,
-              createdBy: document.createdBy,
-              organizationId: document.organizationId,
+              createdBy: job.createdBy,
+              organizationId: job.organizationId,
             });
-          } else {
-            console.log(`[Bundle Analysis] Skipping - active job already exists`);
+
+            if (analysisResult.isNew) {
+              console.log(`[Bundle Analysis] Created new analysis ${analysisResult.analysisId}`);
+            } else {
+              console.log(`[Bundle Analysis] Reusing existing analysis ${analysisResult.analysisId}`);
+            }
+          } catch (error) {
+            console.error(`[Bundle Analysis] Failed to start analysis:`, error);
+            // Don't fail the document ingestion job if analysis fails to start
           }
         } else {
           console.log(`[Bundle Analysis] Bundle not ready yet - status: ${bundle?.status}`);
@@ -602,34 +648,25 @@ export const cancel = mutation({
 
 /**
  * Get all jobs for a document
+ * OPTIMIZED: Uses compound index instead of full table scan
+ * Note: Internal tool - all authenticated users can see all jobs
  */
 export const getJobsForDocument = query({
   args: {
     documentId: v.id("documents"),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
+    // OPTIMIZED: Use compound index for efficient lookup
     const jobs = await ctx.db
       .query("jobs")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("type"), "document_ingest"),
-          q.eq(q.field("input.documentId"), args.documentId)
-        )
+      .withIndex("by_type_document", (q) =>
+        q.eq("type", "document_ingest").eq("documentId", args.documentId)
       )
-      .collect();
+      .take(20);
 
-    // Filter by access control
-    return jobs.filter((job) => {
-      if (job.createdBy === identity.clerkUserId) {
-        return true;
-      }
-      if (identity.organizationId && job.organizationId === identity.organizationId) {
-        return true;
-      }
-      return false;
-    });
+    return jobs;
   },
 });
 
@@ -644,54 +681,44 @@ export const getInternal = internalQuery({
 
 /**
  * Get all jobs for a bundle
+ * OPTIMIZED: Uses compound index instead of full table scan
+ * Note: Internal tool - all authenticated users can see all jobs
  */
 export const getJobsForBundle = query({
   args: {
     bundleId: v.id("bundles"),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
+    // OPTIMIZED: Use compound index for efficient lookup
     const jobs = await ctx.db
       .query("jobs")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("type"), "analyze_opportunity"),
-          q.eq(q.field("input.bundleId"), args.bundleId)
-        )
+      .withIndex("by_type_bundle", (q) =>
+        q.eq("type", "analyze_opportunity").eq("bundleId", args.bundleId)
       )
-      .collect();
+      .take(20);
 
-    // Filter by access control
-    return jobs.filter((job) => {
-      if (job.createdBy === identity.clerkUserId) {
-        return true;
-      }
-      if (identity.organizationId && job.organizationId === identity.organizationId) {
-        return true;
-      }
-      return false;
-    });
+    return jobs;
   },
 });
 
 /**
  * Internal query to get all jobs for a bundle (for actions)
+ * OPTIMIZED: Uses compound index instead of full table scan
  */
 export const getJobsForBundleInternal = internalQuery({
   args: {
     bundleId: v.id("bundles"),
   },
   handler: async (ctx, args) => {
+    // OPTIMIZED: Use compound index for efficient lookup
     const jobs = await ctx.db
       .query("jobs")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("type"), "analyze_opportunity"),
-          q.eq(q.field("input.bundleId"), args.bundleId)
-        )
+      .withIndex("by_type_bundle", (q) =>
+        q.eq("type", "analyze_opportunity").eq("bundleId", args.bundleId)
       )
-      .collect();
+      .take(20);
 
     return jobs;
   },
@@ -699,6 +726,7 @@ export const getJobsForBundleInternal = internalQuery({
 
 /**
  * Enqueue bundle analysis job
+ * Note: Internal tool - all authenticated users can enqueue analysis
  */
 export const enqueueBundleAnalysis = mutation({
   args: {
@@ -710,10 +738,6 @@ export const enqueueBundleAnalysis = mutation({
 
     if (!bundle) {
       throw new Error("Bundle not found");
-    }
-
-    if (bundle.createdBy !== identity.clerkUserId) {
-      throw new Error("Forbidden");
     }
 
     const jobId = await ctx.db.insert("jobs", {
@@ -732,11 +756,12 @@ export const enqueueBundleAnalysis = mutation({
       resumeToken: undefined,
       resumeData: undefined,
       createdBy: identity.clerkUserId,
-      organizationId: identity.organizationId,
       createdAt: Date.now(),
       startedAt: undefined,
       finishedAt: undefined,
       scheduledFor: undefined,
+      // OPTIMIZATION: Top-level field for indexed lookups
+      bundleId: args.bundleId,
     });
 
     await ctx.scheduler.runAfter(0, internal.jobs.processBundleAnalysis, {
@@ -755,7 +780,7 @@ export const enqueueBundleAnalysisInternal = internalMutation({
   args: {
     bundleId: v.id("bundles"),
     createdBy: v.string(),
-    organizationId: v.optional(v.string()),
+    organizationId: v.optional(v.string()), // Kept for backward compatibility but not used
   },
   handler: async (ctx, args) => {
     const jobId = await ctx.db.insert("jobs", {
@@ -774,11 +799,12 @@ export const enqueueBundleAnalysisInternal = internalMutation({
       resumeToken: undefined,
       resumeData: undefined,
       createdBy: args.createdBy,
-      organizationId: args.organizationId,
       createdAt: Date.now(),
       startedAt: undefined,
       finishedAt: undefined,
       scheduledFor: undefined,
+      // OPTIMIZATION: Top-level field for indexed lookups
+      bundleId: args.bundleId,
     });
 
     await ctx.scheduler.runAfter(0, internal.jobs.processBundleAnalysis, {
@@ -860,189 +886,20 @@ export const processBundleAnalysis = internalAction({
         throw new Error(`Not all documents in bundle are ready. Statuses: ${docStatuses}`);
       }
 
-      // ==================== STAGE 2: COLLECT CONTEXT ====================
-      await updateProgress(2, "Collecting document context");
+      const extraction = USE_GEMINI_FILE_SEARCH_ANALYSIS
+        ? await runGeminiBundleExtraction(ctx, args, bundle, documents, updateProgress)
+        : await runLegacyBundleExtraction(ctx, args, bundle, documents, updateProgress);
 
-      // Quick-test flag to use full context (join ALL chunks per doc)
-      // Set LLM_FULL_CONTEXT=true in env to enable.
-      const useFullContext = process.env.LLM_FULL_CONTEXT === "true";
-
-      // Get chunks from all documents, limit to top N per document
-      // In full context mode, lift caps substantially.
-      const MAX_CHUNKS_PER_DOC = useFullContext ? 100000 : 20;
-      const MAX_TOTAL_CHARS = useFullContext ? Number.POSITIVE_INFINITY : 100000; // ~25k tokens when not full
-
-      let contextChunks: Array<{ text: string; documentId: string; sequence: number }> = [];
-      let totalChars = 0;
-
-      for (const doc of documents) {
-        const chunks = await ctx.runQuery(internal.chunks.listByDocumentInternal, {
-          documentId: doc._id,
-          limit: MAX_CHUNKS_PER_DOC,
-        });
-
-        for (const chunk of chunks) {
-          if (totalChars + chunk.text.length > MAX_TOTAL_CHARS) {
-            break;
-          }
-          contextChunks.push({
-            text: chunk.text,
-            documentId: doc._id,
-            sequence: chunk.sequence,
-          });
-          totalChars += chunk.text.length;
-        }
-
-        if (totalChars >= MAX_TOTAL_CHARS) {
-          break;
-        }
-      }
-
-      if (contextChunks.length === 0) {
-        throw new Error("No chunks found in bundle documents");
-      }
-
-      const contextText = contextChunks.map((c) => c.text).join("\n\n");
-      console.log(`[Bundle Analysis Job] Collected ${contextChunks.length} chunks (${totalChars} chars). FullContext=${useFullContext}`);
-
-      // ==================== STAGE 3: LLM EXTRACTION ====================
-      await updateProgress(3, "Extracting opportunity data with LLM");
-
-      // Validate environment
-      const hasOpenAI = Boolean(process.env.OPENAI_API_KEY);
-      const hasAzureOpenAI = Boolean(
-        process.env.AZURE_OPENAI_API_KEY &&
-        process.env.AZURE_OPENAI_ENDPOINT &&
-        process.env.AZURE_OPENAI_DEPLOYMENT
-      );
-
-      if (!hasOpenAI && !hasAzureOpenAI) {
-        throw new Error(
-          "LLM API not configured. Set OPENAI_API_KEY or Azure OpenAI credentials (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT)"
-        );
-      }
-
-      // Import LLM packages dynamically
-      const { StructuredOutputClient, ModelRouter, PROMPTS } = await import("@tenderbot/llm");
-      const { z } = await import("@tenderbot/contracts");
-
-      // Create router and client
-      const router = new ModelRouter({
-        defaultProvider: "openai",
-        fallbackProviders: [],
-      });
-
-      const apiKey = process.env.OPENAI_API_KEY ?? process.env.AZURE_OPENAI_API_KEY;
-      const client = new StructuredOutputClient(apiKey, router);
-
-      // Define extraction schema (subset of OpportunitySchema with requirements and risks)
-      const ExtractionSchema = z.object({
-        title: z.string().min(1).default("Untitled Opportunity"),
-        issuer: z.string().min(1).default("Unknown Issuer"),
-        issuerCategory: z.string().optional().nullable(),
-        referenceNumber: z.string().optional().nullable(),
-        dueDate: z.number().int().optional().nullable(),
-        publishedDate: z.number().int().optional().nullable(),
-        estimatedValue: z.number().optional().nullable(),
-        currency: z.string().min(1).default("ZAR"),
-        description: z.string().optional().nullable(),
-        summary: z.string().optional().nullable(),
-        requiredDocuments: z
-          .array(
-            z.object({
-              name: z.string(),
-              mandatory: z.boolean().optional().default(true),
-              notes: z.string().optional(),
-            })
-          )
-          .default([]),
-        requirements: z
-          .array(
-            z.union([
-              z.object({
-                id: z.string().optional(),
-                type: z
-                  .enum([
-                    "compliance",
-                    "technical",
-                    "commercial",
-                    "legal",
-                    "bee",
-                    "eligibility",
-                    "other",
-                  ])
-                  .default("other"),
-                description: z.string().optional(),
-                mandatory: z.boolean().optional().default(false),
-                status: z
-                  .enum(["met", "partial", "unknown", "not_met"])
-                  .optional()
-                  .default("unknown"),
-                confidence: z.number().min(0).max(1).optional(),
-                notes: z.string().optional(),
-              }),
-              z.string(),
-            ])
-          )
-          .default([]),
-        risks: z
-          .array(
-            z.union([
-              z.object({
-                id: z.string().optional(),
-                category: z
-                  .enum([
-                    "eligibility",
-                    "bee_compliance",
-                    "financial",
-                    "technical",
-                    "timeline",
-                    "commercial",
-                    "legal",
-                  ])
-                  .default("commercial"),
-                severity: z
-                  .enum(["low", "medium", "high", "critical"])
-                  .optional()
-                  .default("medium"),
-                description: z.string().optional(),
-                mitigation: z.string().optional(),
-                likelihood: z.number().min(0).max(1).optional(),
-                impact: z.number().min(0).max(1).optional(),
-              }),
-              z.string(),
-            ])
-          )
-          .default([]),
-        score: z
-          .object({
-            overall: z.number().min(0).max(100).optional(),
-            eligibility: z.number().min(0).max(100).optional(),
-            competitiveness: z.number().min(0).max(100).optional(),
-            strategicFit: z.number().min(0).max(100).optional(),
-          })
-          .optional(),
-      });
-
-      const prompt = PROMPTS.extractDocument(
-        contextText,
-        "Extract tender opportunity information including title, issuer, reference number, due date, description, requirements array, risks array, scoring, a concise summary, and an explicit list of required submission documents."
-      );
-
-      const { data, metadata } = await client.generate({
-        schema: ExtractionSchema,
-        prompt,
-        model: {
-          provider: "openai",
-          model: process.env.LLM_MODEL ?? "gpt-4.1",
-          temperature: 0.1,
-          maxTokens: 32768,
-        },
-        options: { maxRetries: 3 },
-      });
+      const data = extraction.data;
+      const metadata = extraction.metadata;
+      const contextChunks = extraction.contextChunks;
+      const contextText = extraction.contextText;
+      const analysisMetadataExtras = extraction.analysisMetadataExtras ?? {};
+      const geminiTenderAnalysis = extraction.geminiTenderAnalysis;
 
       const requirements = (data.requirements ?? []).reduce(
-        (acc: Array<{
+        (
+          acc: Array<{
           id: string;
           type: "compliance" | "technical" | "commercial" | "legal" | "bee" | "eligibility" | "other";
           description: string;
@@ -1050,7 +907,10 @@ export const processBundleAnalysis = internalAction({
           status: "met" | "partial" | "unknown" | "not_met";
           confidence?: number;
           notes?: string;
-        }>, req, index) => {
+          }>,
+          req: any,
+          index: number
+        ) => {
           // Allow string items from the model and coerce to objects
           if (typeof req === "string") {
             const text = req.trim();
@@ -1085,7 +945,8 @@ export const processBundleAnalysis = internalAction({
       );
 
       const risks = (data.risks ?? []).reduce(
-        (acc: Array<{
+        (
+          acc: Array<{
           id: string;
           category:
             | "eligibility"
@@ -1100,7 +961,10 @@ export const processBundleAnalysis = internalAction({
           mitigation?: string;
           likelihood?: number;
           impact?: number;
-        }>, risk, index) => {
+          }>,
+          risk: any,
+          index: number
+        ) => {
           if (typeof risk === "string") {
             const text = risk.trim();
             if (text.length === 0) return acc;
@@ -1134,7 +998,8 @@ export const processBundleAnalysis = internalAction({
 
       // Fold required submission documents into requirements as compliance items
       if (Array.isArray(data.requiredDocuments) && data.requiredDocuments.length > 0) {
-        data.requiredDocuments.forEach((doc, idx) => {
+        data.requiredDocuments.forEach(
+          (doc: { name: string; mandatory?: boolean; notes?: string }, idx: number) => {
           requirements.push({
             id: `req-doc-${args.bundleId}-${idx}`,
             type: "compliance",
@@ -1142,7 +1007,8 @@ export const processBundleAnalysis = internalAction({
             mandatory: doc.mandatory ?? true,
             status: "unknown",
           });
-        });
+        }
+        );
       }
 
       const safeTitle = data.title?.trim().length ? data.title.trim() : "Untitled Opportunity";
@@ -1161,41 +1027,68 @@ export const processBundleAnalysis = internalAction({
       // ==================== STAGE 4: PERSIST DATA ====================
       await updateProgress(4, "Saving opportunity and analysis");
 
-      // Create opportunity with requirements
-      const opportunityId = await ctx.runMutation(internal.opportunities.createFromAnalysis, {
-        bundleId: args.bundleId,
-        title: safeTitle,
-        issuer: safeIssuer,
-        issuerCategory: data.issuerCategory ?? undefined,
-        referenceNumber: data.referenceNumber ?? undefined,
-        dueDate: safeDueDate,
-        publishedDate: normalizedPublishedDate,
-        estimatedValue: typeof data.estimatedValue === "number" ? data.estimatedValue : undefined,
-        currency: data.currency ?? "ZAR",
-        description: data.description ?? undefined,
-        score: data.score,
-        requirements,
-        risks,
-        createdBy: job.createdBy,
-        organizationId: job.organizationId,
-      });
-
-      // Create analysis record
       const analysisSummary = (data.summary && data.summary.trim().length)
         ? data.summary
         : `Analyzed bundle "${bundle.name}" with ${documents.length} documents. Extracted ${requirements.length} requirements and identified ${risks.length} risks.`;
 
-      await ctx.runMutation(internal.analyses.create, {
-        type: "bundle",
-        targetId: args.bundleId,
-        summary: analysisSummary,
-        metadata: {
-          model: metadata.model,
-          tokensUsed: metadata.tokensUsed?.total,
-          cost: metadata.cost,
-          latencyMs: metadata.latencyMs,
+      // Create analysis record first
+      const metadataEnvelope = {
+        tokensUsed: metadata.tokensUsed?.total,
+        cost: metadata.cost,
+        latencyMs: metadata.latencyMs,
+        ...analysisMetadataExtras,
+      };
+
+      const analysisResultPayload = geminiTenderAnalysis
+        ? {
+            ...geminiTenderAnalysis,
+            summary: analysisSummary,
+            _metadata: metadataEnvelope,
+          }
+        : {
+            ...data,
+            summary: analysisSummary,
+            _metadata: metadataEnvelope,
+          };
+
+      const analysisId = await ctx.runMutation(internal.analyses.create, {
+        bundleId: args.bundleId,
+        status: "completed",
+        model: metadata.model,
+        promptVersion: "1.0",
+        inputBytes: 0, // Not tracked in this flow
+        inputChars: contextText.length,
+        tokensIn: metadata.tokensIn ?? metadata.tokensUsed?.prompt,
+        tokensOut: metadata.tokensOut ?? metadata.tokensUsed?.completion,
+        result: analysisResultPayload,
+        createdBy: job.createdBy,
+        organizationId: job.organizationId,
+      });
+
+      // Construct the analysis object expected by opportunities.ts
+      const analysisObject = {
+        opportunity: {
+            title: safeTitle,
+            issuer: safeIssuer,
+            issuerCategory: data.issuerCategory,
+            referenceNumber: data.referenceNumber,
+            currency: data.currency ?? "ZAR",
+            description: data.description,
         },
-        version: "1.0",
+        timelines: {
+            dueDate: safeDueDate,
+            publishedDate: normalizedPublishedDate,
+        },
+        requirements: requirements,
+        risks: risks,
+        summary: data.summary
+      };
+
+      // Create opportunity with requirements
+      const opportunityId = await ctx.runMutation(internal.opportunities.createFromAnalysis, {
+        analysis: analysisObject,
+        bundleId: args.bundleId,
+        analysisId,
         createdBy: job.createdBy,
         organizationId: job.organizationId,
       });
@@ -1234,3 +1127,284 @@ export const processBundleAnalysis = internalAction({
     }
   },
 });
+
+type ExtractionMetadata = {
+  model: string;
+  tokensUsed?: {
+    prompt?: number;
+    completion?: number;
+    total?: number;
+  };
+  tokensIn?: number;
+  tokensOut?: number;
+  cost?: number;
+  latencyMs?: number;
+};
+
+type BundleExtractionResult = {
+  data: any;
+  metadata: ExtractionMetadata;
+  contextChunks: Array<{ text: string; documentId: string; sequence: number }>;
+  contextText: string;
+  analysisMetadataExtras?: Record<string, unknown>;
+  geminiTenderAnalysis?: any;
+};
+
+async function runLegacyBundleExtraction(
+  ctx: any,
+  args: { bundleId: any },
+  bundle: any,
+  documents: any[],
+  updateProgress: (stageNumber: number, message: string) => Promise<void>
+): Promise<BundleExtractionResult> {
+  await updateProgress(2, "Collecting document context");
+
+  const useFullContext = process.env.LLM_FULL_CONTEXT === "true";
+  const MAX_CHUNKS_PER_DOC = useFullContext ? 100000 : 20;
+  const MAX_TOTAL_CHARS = useFullContext ? Number.POSITIVE_INFINITY : 100000;
+
+  const contextChunks: Array<{ text: string; documentId: string; sequence: number }> = [];
+  let totalChars = 0;
+
+  for (const doc of documents) {
+    // OPTIMIZED: Use lightweight query (excludes embeddings, saves ~12KB per chunk)
+    const chunks = await ctx.runQuery(internal.chunks.listByDocumentInternalLightweight, {
+      documentId: doc._id,
+      limit: MAX_CHUNKS_PER_DOC,
+    });
+
+    for (const chunk of chunks) {
+      if (totalChars + chunk.text.length > MAX_TOTAL_CHARS) {
+        break;
+      }
+      contextChunks.push({
+        text: chunk.text,
+        documentId: doc._id,
+        sequence: chunk.sequence,
+      });
+      totalChars += chunk.text.length;
+    }
+
+    if (totalChars >= MAX_TOTAL_CHARS) {
+      break;
+    }
+  }
+
+  if (contextChunks.length === 0) {
+    throw new Error("No chunks found in bundle documents");
+  }
+
+  const contextText = contextChunks.map((c) => c.text).join("\n\n");
+  console.log(
+    `[Bundle Analysis Job] Collected ${contextChunks.length} chunks (${totalChars} chars). FullContext=${useFullContext}`
+  );
+
+  await updateProgress(3, "Extracting opportunity data with LLM");
+
+  const hasOpenAI = Boolean(process.env.OPENAI_API_KEY);
+  const hasAzureOpenAI = Boolean(
+    process.env.AZURE_OPENAI_API_KEY &&
+      process.env.AZURE_OPENAI_ENDPOINT &&
+      process.env.AZURE_OPENAI_DEPLOYMENT
+  );
+
+  if (!hasOpenAI && !hasAzureOpenAI) {
+    throw new Error(
+      "LLM API not configured. Set OPENAI_API_KEY or Azure OpenAI credentials (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT)"
+    );
+  }
+
+  const { StructuredOutputClient, ModelRouter, PROMPTS } = await import("@tenderbot/llm");
+  const { z } = await import("@tenderbot/contracts");
+
+  const router = new ModelRouter({
+    defaultProvider: "openai",
+    fallbackProviders: [],
+  });
+
+  const apiKey = process.env.OPENAI_API_KEY ?? process.env.AZURE_OPENAI_API_KEY;
+  const client = new StructuredOutputClient(apiKey, router);
+
+  const ExtractionSchema = z.object({
+    title: z.string().min(1).default("Untitled Opportunity"),
+    issuer: z.string().min(1).default("Unknown Issuer"),
+    issuerCategory: z.string().optional().nullable(),
+    referenceNumber: z.string().optional().nullable(),
+    dueDate: z.number().int().optional().nullable(),
+    publishedDate: z.number().int().optional().nullable(),
+    estimatedValue: z.number().optional().nullable(),
+    currency: z.string().min(1).default("ZAR"),
+    description: z.string().optional().nullable(),
+    summary: z.string().optional().nullable(),
+    requiredDocuments: z
+      .array(
+        z.object({
+          name: z.string(),
+          mandatory: z.boolean().optional().default(true),
+          notes: z.string().optional(),
+        })
+      )
+      .default([]),
+    requirements: z
+      .array(
+        z.union([
+          z.object({
+            id: z.string().optional(),
+            type: z
+              .enum([
+                "compliance",
+                "technical",
+                "commercial",
+                "legal",
+                "bee",
+                "eligibility",
+                "other",
+              ])
+              .default("other"),
+            description: z.string().optional(),
+            mandatory: z.boolean().optional().default(false),
+            status: z
+              .enum(["met", "partial", "unknown", "not_met"])
+              .optional()
+              .default("unknown"),
+            confidence: z.number().min(0).max(1).optional(),
+            notes: z.string().optional(),
+          }),
+          z.string(),
+        ])
+      )
+      .default([]),
+    risks: z
+      .array(
+        z.union([
+          z.object({
+            id: z.string().optional(),
+            category: z
+              .enum([
+                "eligibility",
+                "bee_compliance",
+                "financial",
+                "technical",
+                "timeline",
+                "commercial",
+                "legal",
+              ])
+              .default("commercial"),
+            severity: z.enum(["low", "medium", "high", "critical"]).optional().default("medium"),
+            description: z.string().optional(),
+            mitigation: z.string().optional(),
+            likelihood: z.number().min(0).max(1).optional(),
+            impact: z.number().min(0).max(1).optional(),
+          }),
+          z.string(),
+        ])
+      )
+      .default([]),
+    score: z
+      .object({
+        overall: z.number().min(0).max(100).optional(),
+        eligibility: z.number().min(0).max(100).optional(),
+        competitiveness: z.number().min(0).max(100).optional(),
+        strategicFit: z.number().min(0).max(100).optional(),
+      })
+      .optional(),
+  });
+
+  const prompt = PROMPTS.extractDocument(
+    contextText,
+    "Extract tender opportunity information including title, issuer, reference number, due date, description, requirements array, risks array, scoring, a concise summary, and an explicit list of required submission documents."
+  );
+
+  const extraction = await client.generate({
+    schema: ExtractionSchema,
+    prompt,
+    model: {
+      provider: "openai",
+      model: process.env.LLM_MODEL ?? "gpt-4.1",
+      temperature: 0.1,
+      maxTokens: 32768,
+    },
+    options: { maxRetries: 3 },
+  });
+
+  return {
+    data: extraction.data,
+    metadata: {
+      model: extraction.metadata.model,
+      tokensUsed: extraction.metadata.tokensUsed,
+      tokensIn: extraction.metadata.tokensUsed?.prompt,
+      tokensOut: extraction.metadata.tokensUsed?.completion,
+      cost: extraction.metadata.cost,
+      latencyMs: extraction.metadata.latencyMs,
+    },
+    contextChunks,
+    contextText,
+    analysisMetadataExtras: {
+      source: "legacy_rag",
+      promptVersion: "1.0",
+    },
+  };
+}
+
+async function runGeminiBundleExtraction(
+  ctx: any,
+  args: { bundleId: any },
+  bundle: any,
+  documents: any[],
+  updateProgress: (stageNumber: number, message: string) => Promise<void>
+): Promise<BundleExtractionResult> {
+  await updateProgress(2, "Running Gemini File Search analysis");
+
+  const geminiAnalysis = await ctx.runAction(internal.analyses.runGeminiFileSearchAnalysis, {
+    bundleId: args.bundleId,
+  });
+
+  const data = {
+    title: geminiAnalysis.analysis.opportunity.title,
+    issuer: geminiAnalysis.analysis.opportunity.issuer,
+    issuerCategory: geminiAnalysis.analysis.opportunity.issuerCategory,
+    referenceNumber: geminiAnalysis.analysis.opportunity.referenceNumber,
+    dueDate: geminiAnalysis.analysis.timelines.dueDate,
+    publishedDate: geminiAnalysis.analysis.timelines.publishedDate,
+    currency: geminiAnalysis.analysis.opportunity.currency,
+    description:
+      geminiAnalysis.analysis.opportunity.description ?? geminiAnalysis.analysis.summary,
+    summary: geminiAnalysis.analysis.summary,
+    requirements: geminiAnalysis.analysis.requirements,
+    risks: geminiAnalysis.analysis.risks,
+    requiredDocuments: (geminiAnalysis.analysis.documentsChecklist ?? []).map(
+      (doc: { name: string; mandatory: boolean; instructions?: string }) => ({
+        name: doc.name,
+        mandatory: doc.mandatory,
+        notes: doc.instructions,
+      })
+    ),
+  };
+
+  console.log(
+    `[Bundle Analysis Job] Gemini File Search analysis complete for bundle ${bundle.name}`
+  );
+
+  return {
+    data,
+    metadata: {
+      model: geminiAnalysis.model,
+      tokensUsed: {
+        prompt: geminiAnalysis.usageMetadata?.promptTokenCount,
+        completion: geminiAnalysis.usageMetadata?.candidatesTokenCount,
+        total: geminiAnalysis.usageMetadata?.totalTokenCount,
+      },
+      tokensIn: geminiAnalysis.usageMetadata?.promptTokenCount,
+      tokensOut: geminiAnalysis.usageMetadata?.candidatesTokenCount,
+      latencyMs: geminiAnalysis.latencyMs,
+    },
+    contextChunks: [],
+    contextText: "",
+    analysisMetadataExtras: {
+      source: "gemini_file_search",
+      usage: geminiAnalysis.usageMetadata,
+      grounding: geminiAnalysis.groundingMetadata,
+    },
+    geminiTenderAnalysis: geminiAnalysis.analysis,
+  };
+}

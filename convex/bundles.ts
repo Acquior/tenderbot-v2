@@ -30,6 +30,7 @@ export const detectBundle = internalMutation({
     const uploadTimeMax = document.createdAt + timeWindow;
 
     // Find recent documents from same user/org
+    // OPTIMIZED: Added limit to prevent unbounded data transfer
     const recentDocs = await ctx.db
       .query("documents")
       .withIndex("by_created_by", (q) => q.eq("createdBy", document.createdBy))
@@ -39,15 +40,10 @@ export const detectBundle = internalMutation({
           q.lte(q.field("createdAt"), uploadTimeMax)
         )
       )
-      .collect();
+      .take(100);
 
-    // Filter by organization if present
-    const candidates = recentDocs.filter((doc) => {
-      if (document.organizationId && doc.organizationId !== document.organizationId) {
-        return false;
-      }
-      return true;
-    });
+    // All recent docs from same user are candidates
+    const candidates = recentDocs;
 
     // Check if any candidates have bundles
     let existingBundle = null;
@@ -58,8 +54,7 @@ export const detectBundle = internalMutation({
           // Check if bundle matches criteria
           if (
             (!referenceNumber || bundle.referenceNumber === referenceNumber) &&
-            bundle.createdBy === document.createdBy &&
-            bundle.organizationId === document.organizationId
+            bundle.createdBy === document.createdBy
           ) {
             existingBundle = bundle;
             break;
@@ -92,7 +87,6 @@ export const detectBundle = internalMutation({
         referenceNumber: referenceNumber || undefined,
         status: "processing",
         createdBy: document.createdBy,
-        organizationId: document.organizationId,
         createdAt: Date.now(),
         metadata: {
           detectedAt: Date.now(),
@@ -136,7 +130,6 @@ export const detectBundle = internalMutation({
       referenceNumber: referenceNumber || undefined,
       status: "processing",
       createdBy: document.createdBy,
-      organizationId: document.organizationId,
       createdAt: Date.now(),
       metadata: {
         detectedAt: Date.now(),
@@ -176,7 +169,6 @@ export const create = mutation({
       dueDate: args.dueDate,
       status: "draft",
       createdBy: identity.clerkUserId,
-      organizationId: identity.organizationId,
       createdAt: Date.now(),
     });
 
@@ -237,26 +229,19 @@ export const updateCompleteness = internalMutation({
 });
 
 /**
- * List all bundles for the user
+ * List all bundles
+ * Note: Internal tool - all authenticated users can see all bundles
  */
 export const list = query({
   args: {
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
-    const bundlesQuery = identity.organizationId
-      ? ctx.db
-          .query("bundles")
-          .withIndex("by_organization", (q) =>
-            q.eq("organizationId", identity.organizationId as string)
-          )
-      : ctx.db
-          .query("bundles")
-          .withIndex("by_created_by", (q) => q.eq("createdBy", identity.clerkUserId));
-
-    const bundles = await bundlesQuery
+    const bundles = await ctx.db
+      .query("bundles")
+      .withIndex("by_created_at")
       .order("desc")
       .take(args.limit ?? 50);
 
@@ -266,56 +251,38 @@ export const list = query({
 
 /**
  * Get a single bundle
+ * Note: Internal tool - all authenticated users can access any bundle
  */
 export const get = query({
   args: { id: v.id("bundles") },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
     const bundle = await ctx.db.get(args.id);
-
-    if (!bundle) {
-      return null;
-    }
-
-    const authorized =
-      bundle.createdBy === identity.clerkUserId ||
-      (identity.organizationId && bundle.organizationId === identity.organizationId);
-
-    if (!authorized) {
-      throw new Error("Forbidden");
-    }
-
     return bundle;
   },
 });
 
 /**
  * Get documents in a bundle
+ * Note: Internal tool - all authenticated users can access any bundle's documents
  */
 export const getDocuments = query({
   args: {
     bundleId: v.id("bundles"),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
     const bundle = await ctx.db.get(args.bundleId);
     if (!bundle) {
       return [];
     }
 
-    const authorized =
-      bundle.createdBy === identity.clerkUserId ||
-      (identity.organizationId && bundle.organizationId === identity.organizationId);
-
-    if (!authorized) {
-      throw new Error("Forbidden");
-    }
-
+    // OPTIMIZED: Added limit to prevent unbounded data transfer
     const documents = await ctx.db
       .query("documents")
       .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
-      .collect();
+      .take(100);
 
     return documents;
   },
@@ -328,10 +295,11 @@ async function updateBundleMetadata(
   ctx: any,
   bundleId: any
 ): Promise<void> {
+  // OPTIMIZED: Added limit to prevent unbounded data transfer
   const documents = await ctx.db
     .query("documents")
     .withIndex("by_bundle", (q: any) => q.eq("bundleId", bundleId))
-    .collect();
+    .take(100);
 
   if (documents.length === 0) {
     return;
@@ -391,6 +359,11 @@ export const getInternal = internalQuery({
 });
 
 /**
+ * Alias for getInternal
+ */
+export const getById = getInternal;
+
+/**
  * Internal query to get documents in a bundle (for actions)
  */
 export const getDocumentsInternal = internalQuery({
@@ -398,10 +371,11 @@ export const getDocumentsInternal = internalQuery({
     bundleId: v.id("bundles"),
   },
   handler: async (ctx, args) => {
+    // OPTIMIZED: Added limit to prevent unbounded data transfer
     const documents = await ctx.db
       .query("documents")
       .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
-      .collect();
+      .take(100);
 
     return documents;
   },

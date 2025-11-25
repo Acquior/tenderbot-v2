@@ -1,16 +1,17 @@
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
+import { internalQuery } from "./_generated/server";
 
 type AnyCtx = QueryCtx | MutationCtx | ActionCtx;
 
 export interface AuthContext {
   clerkUserId: string;
   email?: string;
-  organizationId?: string;
   name?: string;
 }
 
 /**
  * Ensure the request is authenticated via Clerk and return identity metadata.
+ * Note: Organization support removed - this is an internal tool.
  */
 export async function requireUser(ctx: AnyCtx): Promise<AuthContext> {
   const identity = await ctx.auth.getUserIdentity();
@@ -18,17 +19,10 @@ export async function requireUser(ctx: AnyCtx): Promise<AuthContext> {
     throw new Error("Not authenticated");
   }
 
-  const tokenPayload = identity.tokenPayload as Record<string, unknown> | undefined;
-  const organizationId =
-    (tokenPayload?.org_id as string | undefined) ||
-    (tokenPayload?.orgId as string | undefined) ||
-    undefined;
-
   return {
     clerkUserId: identity.subject,
     email: identity.email,
     name: identity.name,
-    organizationId,
   };
 }
 
@@ -45,3 +39,12 @@ export async function getOptionalUser(ctx: AnyCtx): Promise<AuthContext | null> 
     throw error;
   }
 }
+
+/**
+ * Internal query to get current user (for use in actions)
+ */
+export const getCurrentUser = internalQuery({
+  handler: async (ctx) => {
+    return await requireUser(ctx);
+  },
+});

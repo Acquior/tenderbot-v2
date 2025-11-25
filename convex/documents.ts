@@ -4,6 +4,7 @@ import { getOptionalUser, requireUser } from "./auth";
 
 /**
  * List documents for the authenticated user
+ * Note: Internal tool - all authenticated users can see all documents
  */
 export const list = query({
   args: {
@@ -21,54 +22,27 @@ export const list = query({
       ? ctx.db
           .query("documents")
           .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
-      : identity.organizationId
-          ? ctx.db
-              .query("documents")
-              .withIndex("by_organization", (q) =>
-                q.eq("organizationId", identity.organizationId as string)
-              )
-          : ctx.db
-              .query("documents")
-              .withIndex("by_created_by", (q) => q.eq("createdBy", identity.clerkUserId));
+      : ctx.db
+          .query("documents")
+          .withIndex("by_created_at");
 
     const documents = await documentsQuery
       .order("desc")
       .take(args.limit ?? 50);
 
-    return documents.filter((doc) => {
-      if (doc.createdBy === identity.clerkUserId) {
-        return true;
-      }
-
-      if (identity.organizationId && doc.organizationId === identity.organizationId) {
-        return true;
-      }
-
-      return false;
-    });
+    return documents;
   },
 });
 
 /**
  * Get a single document by ID
+ * Note: Internal tool - all authenticated users can access any document
  */
 export const get = query({
   args: { id: v.id("documents") },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
     const document = await ctx.db.get(args.id);
-    if (!document) {
-      return null;
-    }
-
-    const authorized =
-      document.createdBy === identity.clerkUserId ||
-      (identity.organizationId && document.organizationId === identity.organizationId);
-
-    if (!authorized) {
-      throw new Error("Forbidden");
-    }
-
     return document;
   },
 });
@@ -96,7 +70,6 @@ export const create = mutation({
       checksums: {},
       bundleId: args.bundleId,
       createdBy: identity.clerkUserId,
-      organizationId: identity.organizationId,
       createdAt: Date.now(),
     });
 
@@ -176,22 +149,68 @@ export const getInternal = internalQuery({
 });
 
 /**
- * Delete a document
+ * Internal query to list documents by bundle (for actions)
  */
-export const remove = mutation({
-  args: { id: v.id("documents") },
+export const listByBundle = internalQuery({
+  args: { bundleId: v.id("bundles") },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
-    const document = await ctx.db.get(args.id);
+    // OPTIMIZED: Added limit to prevent unbounded data transfer
+    return await ctx.db
+      .query("documents")
+      .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+      .take(100);
+  },
+});
+
+/**
+ * Internal mutation to update Gemini metadata
+ */
+export const updateGeminiMetadata = internalMutation({
+  args: {
+    documentId: v.id("documents"),
+    geminiFileResourceName: v.optional(v.string()),
+    geminiStatus: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("indexing"),
+        v.literal("ready"),
+        v.literal("error")
+      )
+    ),
+  },
+  handler: async (ctx, args) => {
+    const document = await ctx.db.get(args.documentId);
     if (!document) {
       throw new Error("Document not found");
     }
 
-    if (
-      document.createdBy !== identity.clerkUserId &&
-      document.organizationId !== identity.organizationId
-    ) {
-      throw new Error("Forbidden");
+    const patch: Record<string, unknown> = {
+      updatedAt: Date.now(),
+    };
+
+    if (typeof args.geminiFileResourceName !== "undefined") {
+      patch.geminiFileResourceName = args.geminiFileResourceName;
+    }
+
+    if (args.geminiStatus) {
+      patch.geminiStatus = args.geminiStatus;
+    }
+
+    await ctx.db.patch(args.documentId, patch);
+  },
+});
+
+/**
+ * Delete a document
+ * Note: Internal tool - all authenticated users can delete any document
+ */
+export const remove = mutation({
+  args: { id: v.id("documents") },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const document = await ctx.db.get(args.id);
+    if (!document) {
+      throw new Error("Document not found");
     }
 
     // TODO: Also delete the file from storage

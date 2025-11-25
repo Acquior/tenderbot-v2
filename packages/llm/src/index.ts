@@ -9,3 +9,10 @@ export * from "./structured";
 
 // Prompts
 export * from "./prompts";
+
+// Tender analysis collector
+export * from "./collector";
+
+// Gemini File Search
+export * from "./gemini/config";
+export * from "./gemini/client";

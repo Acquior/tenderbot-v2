@@ -3,12 +3,20 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, X, FileText, Briefcase, MessageSquare, Settings } from "lucide-react";
+import { 
+  Menu, 
+  X, 
+  FileText, 
+  Briefcase, 
+  MessageSquare, 
+  Settings, 
+  LayoutDashboard,
+  ChevronRight
+} from "lucide-react";
 import { SignedIn, UserButton } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { ThemeToggle } from "@/components/theme-toggle";
 
 interface NavItem {
   href: string;
@@ -29,7 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href: "/app/chat",
-    label: "Knowledge Chat",
+    label: "Knowledge",
     icon: MessageSquare,
   },
   {
@@ -44,34 +52,40 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-screen bg-black text-white font-sans selection:bg-purple-500/30 selection:text-purple-200">
       {/* Sidebar */}
       <aside
         className={cn(
-          "border-r border-border/40 bg-card lg:sticky lg:top-0 lg:block lg:h-screen lg:w-64",
-          isMobileOpen ? "fixed inset-0 z-50" : "hidden"
+          "fixed inset-y-0 left-0 z-50 w-72 transform transition-transform duration-300 ease-in-out lg:static lg:translate-x-0",
+          "bg-black border-r border-white/10",
+          isMobileOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
         <div className="flex h-full flex-col">
           {/* Logo & Close Button */}
-          <div className="flex h-16 items-center justify-between px-6 border-b border-border/40">
-            <Link href="/app/documents" className="flex items-center gap-2">
-              <div className="h-7 w-7 rounded-lg bg-primary" />
-              <span className="font-semibold tracking-tight">TenderBot</span>
+          <div className="flex h-20 items-center justify-between px-8 border-b border-white/10">
+            <Link href="/app/documents" className="flex items-center gap-3 group">
+              <div className="h-6 w-6 bg-white rounded-sm flex items-center justify-center">
+                <div className="h-2 w-2 bg-black rounded-full" />
+              </div>
+              <span className="font-bold tracking-tighter text-white text-xl uppercase">TenderBot</span>
             </Link>
             <Button
               variant="ghost"
               size="icon"
-              className="lg:hidden"
+              className="lg:hidden text-zinc-400"
               onClick={() => setIsMobileOpen(false)}
               aria-label="Close sidebar"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </Button>
           </div>
 
           {/* Navigation */}
-          <ScrollArea className="flex-1 px-4 py-6">
+          <ScrollArea className="flex-1 px-4 py-8">
+            <div className="mb-4 px-4">
+              <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-500">Platform</p>
+            </div>
             <nav className="space-y-1">
               {NAV_ITEMS.map((item) => {
                 const active = pathname.startsWith(item.href);
@@ -82,14 +96,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     href={item.href}
                     onClick={() => setIsMobileOpen(false)}
                     className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      "group flex items-center justify-between rounded-none px-4 py-3 text-xs font-bold uppercase tracking-widest transition-all duration-200 border-l-2",
                       active
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                        ? "border-white bg-white/5 text-white"
+                        : "border-transparent text-zinc-500 hover:text-white hover:bg-white/5"
                     )}
                   >
-                    <Icon className="h-4 w-4" />
-                    {item.label}
+                    <div className="flex items-center gap-4">
+                      <Icon className={cn("h-4 w-4", active ? "text-white" : "text-zinc-600 group-hover:text-zinc-400")} />
+                      {item.label}
+                    </div>
+                    {active && <div className="h-1.5 w-1.5 bg-purple-500 rounded-full shadow-[0_0_10px_rgba(168,85,247,0.5)]" />}
                   </Link>
                 );
               })}
@@ -97,44 +114,67 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </ScrollArea>
 
           {/* Footer */}
-          <div className="border-t border-border/40 px-4 py-4">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground">
-                v2.0.0
+          <div className="border-t border-white/10 px-8 py-6 bg-black">
+            <div className="flex items-center gap-3">
+              <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-white uppercase tracking-widest">System Online</span>
+                <span className="text-[10px] text-zinc-600 font-mono">v2.0.0-stable</span>
               </div>
-              <ThemeToggle />
             </div>
           </div>
         </div>
       </aside>
 
+      {/* Overlay for mobile */}
+      {isMobileOpen && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm lg:hidden"
+          onClick={() => setIsMobileOpen(false)}
+        />
+      )}
+
       {/* Main Content */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <header className="sticky top-0 z-40 border-b border-border/40 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-          <div className="flex h-16 items-center gap-4 px-6">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="lg:hidden"
-              onClick={() => setIsMobileOpen(true)}
-            >
-              <Menu className="h-5 w-5" />
-            </Button>
-            <div className="flex-1">
-              <h1 className="text-lg font-semibold tracking-tight">
-                {NAV_ITEMS.find((item) => pathname.startsWith(item.href))?.label ?? "Dashboard"}
+        <header className="sticky top-0 z-30 border-b border-white/10 bg-black/80 backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
+          <div className="flex h-20 items-center justify-between px-8 lg:px-10">
+            <div className="flex items-center gap-6">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="-ml-2 lg:hidden"
+                onClick={() => setIsMobileOpen(true)}
+              >
+                <Menu className="h-5 w-5" />
+              </Button>
+              <h1 className="text-sm font-bold tracking-widest uppercase text-white">
+                {NAV_ITEMS.find((item) => pathname.startsWith(item.href))?.label ?? "Studio"}
               </h1>
             </div>
-            <SignedIn>
-              <UserButton afterSignOutUrl="/" />
-            </SignedIn>
+            <div className="flex items-center gap-6">
+              <div className="hidden md:flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-zinc-500 border border-white/10 px-3 py-1">
+                <span>Workspace: Main</span>
+              </div>
+              <SignedIn>
+                <UserButton 
+                  afterSignOutUrl="/" 
+                  appearance={{
+                    elements: {
+                      avatarBox: "h-8 w-8 ring-2 ring-white/10 hover:ring-white transition-all rounded-none"
+                    }
+                  }}
+                />
+              </SignedIn>
+            </div>
           </div>
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 px-6 py-8 lg:px-8 lg:py-10">
-          {children}
+        <main className="flex-1 overflow-auto bg-zinc-950">
+          <div className="container max-w-[1600px] mx-auto px-6 py-8 lg:px-10 lg:py-12">
+            {children}
+          </div>
         </main>
       </div>
     </div>

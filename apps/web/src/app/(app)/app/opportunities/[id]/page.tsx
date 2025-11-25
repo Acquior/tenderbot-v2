@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
-import type { Id } from "@convex/_generated/dataModel";
+import type { Doc, Id } from "@convex/_generated/dataModel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,15 +68,16 @@ export default function OpportunityDetailPage() {
   );
 
   const groupedRequirements = useMemo(() => {
-    if (!requirements) return {};
+    if (!requirements) return {} as Record<RequirementType, Doc<"requirements">[]>;
 
     return requirements.reduce((acc, req) => {
-      if (!acc[req.type]) {
-        acc[req.type] = [];
+      const type = req.type as RequirementType;
+      if (!acc[type]) {
+        acc[type] = [];
       }
-      acc[req.type].push(req);
+      acc[type].push(req);
       return acc;
-    }, {} as Record<RequirementType, typeof requirements>);
+    }, {} as Record<RequirementType, Doc<"requirements">[]>);
   }, [requirements]);
 
   const mandatoryCount = requirements?.filter((r) => r.mandatory).length ?? 0;
@@ -254,16 +255,17 @@ export default function OpportunityDetailPage() {
 
           {requirements && requirements.length > 0 && (
             <div className="space-y-6">
-              {Object.entries(groupedRequirements).map(([type, reqs]) => (
+              {(Object.entries(groupedRequirements) as [RequirementType, Doc<"requirements">[]][]).map(([type, reqs]) => (
                 <div key={type} className="space-y-3">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
-                    {REQUIREMENT_TYPE_LABELS[type as RequirementType]}
+                    {REQUIREMENT_TYPE_LABELS[type]}
                     <Badge variant="outline">{reqs.length}</Badge>
                   </h3>
                   <div className="space-y-2">
                     {reqs.map((req) => {
-                      const Icon = REQUIREMENT_STATUS_ICONS[req.status];
-                      const statusColor = REQUIREMENT_STATUS_COLORS[req.status];
+                      const status = req.status as RequirementStatus;
+                      const Icon = REQUIREMENT_STATUS_ICONS[status];
+                      const statusColor = REQUIREMENT_STATUS_COLORS[status];
 
                       return (
                         <div

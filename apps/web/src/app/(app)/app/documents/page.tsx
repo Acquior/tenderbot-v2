@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useMutation, useQuery } from "convex/react";
 import { Upload, Activity, FolderCheck, Shield, RefreshCw, X, Package } from "lucide-react";
@@ -313,8 +313,8 @@ const STATUS_BADGE_VARIANT: Partial<Record<DocumentStatus, "secondary" | "destru
 const ACTIVE_JOB_STATUSES: JobStatus[] = ["running", "pending", "retrying"];
 
 function DocumentRow({ document }: { document: Doc<"documents"> }) {
-  const [retryPending, startRetry] = useTransition();
-  const [cancelPending, startCancel] = useTransition();
+  const [retryPending, setRetryPending] = useState(false);
+  const [cancelPending, setCancelPending] = useState(false);
 
   const jobs = useQuery(api.jobs.getJobsForDocument, { documentId: document._id });
   const bundle = useQuery(
@@ -353,32 +353,34 @@ function DocumentRow({ document }: { document: Doc<"documents"> }) {
   const stageLabel =
     STATUS_STAGE_LABELS[document.status] ?? document.status.replaceAll("_", " ");
 
-  const handleRetry = () => {
+  const handleRetry = async () => {
     if (!failedJob) {
       return;
     }
 
-    startRetry(async () => {
-      try {
-        await retryJob({ jobId: failedJob._id });
-      } catch (error) {
-        console.error("Failed to retry job", error);
-      }
-    });
+    try {
+      setRetryPending(true);
+      await retryJob({ jobId: failedJob._id });
+    } catch (error) {
+      console.error("Failed to retry job", error);
+    } finally {
+      setRetryPending(false);
+    }
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
     if (!activeJob) {
       return;
     }
 
-    startCancel(async () => {
-      try {
-        await cancelJob({ jobId: activeJob._id });
-      } catch (error) {
-        console.error("Failed to cancel job", error);
-      }
-    });
+    try {
+      setCancelPending(true);
+      await cancelJob({ jobId: activeJob._id });
+    } catch (error) {
+      console.error("Failed to cancel job", error);
+    } finally {
+      setCancelPending(false);
+    }
   };
 
   const bundleCompleteness =

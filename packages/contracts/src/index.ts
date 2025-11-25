@@ -5,6 +5,7 @@ export * from "./chunk";
 // Opportunity and analysis schemas
 export * from "./opportunity";
 export * from "./analysis";
+export * from "./tenders";
 
 // Bundle schemas
 export * from "./bundle";

@@ -4,29 +4,21 @@ import { requireUser } from "./auth";
 
 /**
  * Get a single opportunity by ID
+ * Note: Internal tool - all authenticated users can access any opportunity
  */
 export const get = query({
   args: { id: v.id("opportunities") },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
     const opportunity = await ctx.db.get(args.id);
-
-    if (!opportunity) {
-      return null;
-    }
-
-    const authorized =
-      opportunity.createdBy === identity.clerkUserId ||
-      (identity.organizationId && opportunity.organizationId === identity.organizationId);
-
-    if (!authorized) {
-      throw new Error("Forbidden");
-    }
-
     return opportunity;
   },
 });
 
+/**
+ * List all opportunities
+ * Note: Internal tool - all authenticated users can see all opportunities
+ */
 export const list = query({
   args: {
     status: v.optional(
@@ -43,39 +35,19 @@ export const list = query({
     ),
   },
   handler: async (ctx, args) => {
-    const identity = await requireUser(ctx);
+    await requireUser(ctx);
 
-    const opportunitiesQuery = identity.organizationId
-      ? ctx.db
-          .query("opportunities")
-          .withIndex("by_organization", (q) =>
-            q.eq("organizationId", identity.organizationId)
-          )
-      : ctx.db
-          .query("opportunities")
-          .withIndex("by_created_by", (q) => q.eq("createdBy", identity.clerkUserId));
+    let results = await ctx.db
+      .query("opportunities")
+      .withIndex("by_created_at")
+      .order("desc")
+      .take(50);
 
-    const results = await opportunitiesQuery.order("desc").take(50);
+    if (args.status) {
+      results = results.filter((opportunity) => opportunity.status === args.status);
+    }
 
-    return results.filter((opportunity) => {
-      if (opportunity.createdBy === identity.clerkUserId) {
-        return true;
-      }
-
-      const inOrganization =
-        Boolean(identity.organizationId) &&
-        opportunity.organizationId === identity.organizationId;
-
-      if (!inOrganization) {
-        return false;
-      }
-
-      if (args.status && opportunity.status !== args.status) {
-        return false;
-      }
-
-      return true;
-    });
+    return results;
   },
 });
 
@@ -106,13 +78,6 @@ export const upsert = mutation({
         throw new Error("Opportunity not found");
       }
 
-      if (
-        existing.createdBy !== identity.clerkUserId &&
-        existing.organizationId !== identity.organizationId
-      ) {
-        throw new Error("Forbidden");
-      }
-
       await ctx.db.patch(args.id, {
         title: args.title,
         issuer: args.issuer,
@@ -139,7 +104,6 @@ export const upsert = mutation({
       bundleId: undefined,
       score: undefined,
       createdBy: identity.clerkUserId,
-      organizationId: identity.organizationId,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -147,100 +111,42 @@ export const upsert = mutation({
 });
 
 /**
- * Internal mutation to create opportunity from analysis
+ * Internal mutation to create opportunity from TenderAnalysis
  */
 export const createFromAnalysis = internalMutation({
   args: {
+    analysis: v.any(), // TenderAnalysis JSON from LLM
     bundleId: v.id("bundles"),
-    title: v.string(),
-    issuer: v.string(),
-    issuerCategory: v.optional(v.string()),
-    referenceNumber: v.optional(v.string()),
-    dueDate: v.number(),
-    publishedDate: v.optional(v.number()),
-    estimatedValue: v.optional(v.number()),
-    currency: v.string(),
-    description: v.optional(v.string()),
-    score: v.optional(
-      v.object({
-        overall: v.optional(v.number()),
-        eligibility: v.optional(v.number()),
-        competitiveness: v.optional(v.number()),
-        strategicFit: v.optional(v.number()),
-      })
-    ),
-    requirements: v.array(
-      v.object({
-        id: v.string(),
-        type: v.union(
-          v.literal("compliance"),
-          v.literal("technical"),
-          v.literal("commercial"),
-          v.literal("legal"),
-          v.literal("bee"),
-          v.literal("eligibility"),
-          v.literal("other")
-        ),
-        description: v.string(),
-        mandatory: v.boolean(),
-        status: v.union(
-          v.literal("met"),
-          v.literal("partial"),
-          v.literal("unknown"),
-          v.literal("not_met")
-        ),
-        confidence: v.optional(v.number()),
-        notes: v.optional(v.string()),
-      })
-    ),
-    risks: v.array(
-      v.object({
-        id: v.string(),
-        category: v.union(
-          v.literal("eligibility"),
-          v.literal("bee_compliance"),
-          v.literal("financial"),
-          v.literal("technical"),
-          v.literal("timeline"),
-          v.literal("commercial"),
-          v.literal("legal")
-        ),
-        severity: v.union(
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-          v.literal("critical")
-        ),
-        description: v.string(),
-        mitigation: v.optional(v.string()),
-        likelihood: v.optional(v.number()),
-        impact: v.optional(v.number()),
-      })
-    ),
+    analysisId: v.id("analyses"),
     createdBy: v.string(),
-    organizationId: v.optional(v.string()),
+    organizationId: v.optional(v.string()), // Kept for backward compatibility but not used
   },
   handler: async (ctx, args) => {
+    const analysis = args.analysis;
+
     // Ensure idempotency: reuse existing opportunity for this bundle if present
-    const existingOpportunity = (await ctx.db
-      .query("opportunities")
-      .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
-      .take(1))[0];
+    const existingOpportunity = (
+      await ctx.db
+        .query("opportunities")
+        .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+        .take(1)
+    )[0];
 
     const baseOpportunityData = {
-      title: args.title,
-      issuer: args.issuer,
-      issuerCategory: args.issuerCategory,
-      referenceNumber: args.referenceNumber,
-      dueDate: args.dueDate,
-      publishedDate: args.publishedDate,
-      estimatedValue: args.estimatedValue,
-      currency: args.currency,
-      description: args.description,
+      title: analysis.opportunity.title,
+      issuer: analysis.opportunity.issuer,
+      issuerCategory: analysis.opportunity.issuerCategory,
+      referenceNumber: analysis.opportunity.referenceNumber,
+      dueDate: analysis.timelines.dueDate,
+      publishedDate: analysis.timelines.publishedDate,
+      estimatedValue: undefined, // Not in TenderAnalysis schema
+      currency: analysis.opportunity.currency,
+      description: analysis.opportunity.description ?? analysis.summary,
       status: "analysis_complete" as const,
       bundleId: args.bundleId,
-      score: args.score,
-      risks: args.risks,
+      analysisId: args.analysisId,
+      score: undefined, // Could be calculated from risks
+      risks: analysis.risks,
     };
 
     let opportunityId;
@@ -248,34 +154,38 @@ export const createFromAnalysis = internalMutation({
     if (existingOpportunity) {
       await ctx.db.patch(existingOpportunity._id, {
         ...baseOpportunityData,
-        organizationId: args.organizationId ?? existingOpportunity.organizationId,
         updatedAt: Date.now(),
       });
       opportunityId = existingOpportunity._id;
 
       // Remove existing requirements to avoid duplicates on retry
-      const existingRequirements = await ctx.db
-        .query("requirements")
-        .withIndex("by_opportunity", (q) => q.eq("opportunityId", existingOpportunity._id))
-        .collect();
+      // OPTIMIZED: Use paginated deletion to avoid loading all data at once
+      while (true) {
+        const existingRequirements = await ctx.db
+          .query("requirements")
+          .withIndex("by_opportunity", (q) => q.eq("opportunityId", existingOpportunity._id))
+          .take(100);
 
-      for (const requirement of existingRequirements) {
-        await ctx.db.delete(requirement._id);
+        if (existingRequirements.length === 0) break;
+
+        for (const requirement of existingRequirements) {
+          await ctx.db.delete(requirement._id);
+        }
       }
     } else {
       opportunityId = await ctx.db.insert("opportunities", {
         ...baseOpportunityData,
-        organizationId: args.organizationId,
         createdBy: args.createdBy,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
     }
 
-    // Insert requirements
-    for (const req of args.requirements) {
+    // Insert requirements from analysis
+    for (const req of analysis.requirements) {
       await ctx.db.insert("requirements", {
         opportunityId,
+        sourceAnalysisId: args.analysisId,
         type: req.type,
         description: req.description,
         mandatory: req.mandatory,
@@ -283,7 +193,6 @@ export const createFromAnalysis = internalMutation({
         confidence: req.confidence,
         notes: req.notes,
         createdAt: Date.now(),
-        organizationId: args.organizationId,
       });
     }
 

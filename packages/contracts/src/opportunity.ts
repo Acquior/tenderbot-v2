@@ -20,7 +20,7 @@ export type OpportunityStatus = z.infer<typeof OpportunityStatus>;
  * Requirement extracted from tender documents
  */
 export const RequirementSchema = z.object({
-  id: z.string(),
+  id: z.string().optional(),
   type: z.enum([
     "compliance",
     "technical",
@@ -29,22 +29,34 @@ export const RequirementSchema = z.object({
     "bee", // Black Economic Empowerment (South Africa)
     "eligibility",
     "other",
-  ]),
-  description: z.string(),
-  mandatory: z.boolean(),
+  ]).optional().default("other"),
+  description: z.string().optional(),
+  text: z.string().optional(), // Alternative field name LLM might use
+  name: z.string().optional(), // Alternative field name LLM might use
+  mandatory: z.boolean().optional().default(false),
   status: z.enum(["met", "partial", "unknown", "not_met"]).default("unknown"),
   confidence: z.number().min(0).max(1).optional(),
   evidence: z
     .array(
       z.object({
-        documentId: z.string(),
+        documentId: z.string().optional(),
         page: z.number().int().optional(),
         quote: z.string().optional(),
       })
     )
     .optional(),
   notes: z.string().optional(),
-});
+  citation: z.any().optional(), // Allow citation field from LLM
+}).transform((data, ctx) => ({
+  id: data.id || `req-${ctx.path.join("-") || Math.random().toString(36).slice(2, 8)}`,
+  type: data.type || "other",
+  description: data.description || data.text || data.name || "No description provided",
+  mandatory: data.mandatory ?? false,
+  status: data.status || "unknown",
+  confidence: data.confidence,
+  evidence: data.evidence,
+  notes: data.notes,
+}));
 
 export type Requirement = z.infer<typeof RequirementSchema>;
 
@@ -52,7 +64,7 @@ export type Requirement = z.infer<typeof RequirementSchema>;
  * Risk assessment
  */
 export const RiskSchema = z.object({
-  id: z.string(),
+  id: z.string().optional(),
   category: z.enum([
     "eligibility",
     "bee_compliance",
@@ -61,13 +73,25 @@ export const RiskSchema = z.object({
     "timeline",
     "commercial",
     "legal",
-  ]),
-  severity: z.enum(["low", "medium", "high", "critical"]),
-  description: z.string(),
+  ]).optional().default("commercial"),
+  type: z.string().optional(), // Alternative field name LLM might use
+  severity: z.enum(["low", "medium", "high", "critical"]).optional().default("medium"),
+  description: z.string().optional(),
+  text: z.string().optional(), // Alternative field name LLM might use
+  name: z.string().optional(), // Alternative field name LLM might use
   mitigation: z.string().optional(),
   likelihood: z.number().min(0).max(1).optional(),
   impact: z.number().min(0).max(1).optional(),
-});
+  citation: z.any().optional(), // Allow citation field from LLM
+}).transform((data, ctx) => ({
+  id: data.id || `risk-${ctx.path.join("-") || Math.random().toString(36).slice(2, 8)}`,
+  category: data.category || (data.type as any) || "commercial",
+  severity: data.severity || "medium",
+  description: data.description || data.text || data.name || "No description provided",
+  mitigation: data.mitigation,
+  likelihood: data.likelihood,
+  impact: data.impact,
+}));
 
 export type Risk = z.infer<typeof RiskSchema>;
 

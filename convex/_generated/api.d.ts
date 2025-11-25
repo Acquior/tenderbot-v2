@@ -11,8 +11,12 @@
 import type * as analyses from "../analyses.js";
 import type * as auth from "../auth.js";
 import type * as bundles from "../bundles.js";
+import type * as chat from "../chat.js";
 import type * as chunks from "../chunks.js";
+import type * as cleanup from "../cleanup.js";
 import type * as documents from "../documents.js";
+import type * as geminiFileSearch from "../geminiFileSearch.js";
+import type * as geminiStore from "../geminiStore.js";
 import type * as ingest from "../ingest.js";
 import type * as jobs from "../jobs.js";
 import type * as opportunities from "../opportunities.js";
@@ -37,8 +41,12 @@ declare const fullApi: ApiFromModules<{
   analyses: typeof analyses;
   auth: typeof auth;
   bundles: typeof bundles;
+  chat: typeof chat;
   chunks: typeof chunks;
+  cleanup: typeof cleanup;
   documents: typeof documents;
+  geminiFileSearch: typeof geminiFileSearch;
+  geminiStore: typeof geminiStore;
   ingest: typeof ingest;
   jobs: typeof jobs;
   opportunities: typeof opportunities;

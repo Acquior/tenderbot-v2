@@ -2,66 +2,70 @@
 
 @layer base {
   :root {
-    /* Premium Swiss spa aesthetic - light mode */
-    --background: 0 0% 99%;
-    --foreground: 0 0% 8%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 8%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 8%;
-    --primary: 0 0% 12%;
-    --primary-foreground: 0 0% 99%;
-    --secondary: 0 0% 97%;
-    --secondary-foreground: 0 0% 12%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 48%;
-    --accent: 220 14% 96%;
-    --accent-foreground: 220 9% 12%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 99%;
-    --border: 0 0% 92%;
-    --input: 0 0% 92%;
-    --ring: 0 0% 12%;
-    --radius: 0.75rem;
+    /* Void / Studio Theme - Defaulting to Dark aesthetic even in root for consistency if light mode is toggled, 
+       but we will primarily optimize for the dark look shown in the image. */
+    
+    /* Pure Black Background */
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    
+    --card: 0 0% 3%;
+    --card-foreground: 0 0% 100%;
+    
+    --popover: 0 0% 3%;
+    --popover-foreground: 0 0% 100%;
+    
+    /* Vibrant Gradient Components (Blue/Purple/Pink from image) */
+    --primary: 250 100% 70%; /* Vivid Purple/Blue */
+    --primary-foreground: 0 0% 100%;
+    
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 100%;
+    
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 60%;
+    
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 100%;
+    
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 250 100% 70%;
+    
+    --radius: 0px; /* Brutalist - sharp corners */
 
-    /* Semantic colors - minimal palette */
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 99%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 99%;
-    --info: 220 13% 46%;
-    --info-foreground: 0 0% 99%;
+    /* Semantic colors */
+    --success: 142 70% 50%;
+    --success-foreground: 0 0% 0%;
+    --warning: 48 96% 89%;
+    --warning-foreground: 0 0% 0%;
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
   }
 
   .dark {
-    /* Premium dark mode - deep, refined */
-    --background: 0 0% 7%;
-    --foreground: 0 0% 96%;
-    --card: 0 0% 9%;
-    --card-foreground: 0 0% 96%;
-    --popover: 0 0% 9%;
-    --popover-foreground: 0 0% 96%;
-    --primary: 0 0% 96%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 12%;
-    --secondary-foreground: 0 0% 96%;
-    --muted: 0 0% 14%;
-    --muted-foreground: 0 0% 58%;
-    --accent: 220 13% 14%;
-    --accent-foreground: 220 9% 96%;
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 96%;
-    --border: 0 0% 16%;
-    --input: 0 0% 16%;
-    --ring: 0 0% 80%;
-
-    /* Semantic colors - dark mode adjusted */
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 96%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 96%;
-    --info: 220 13% 50%;
-    --info-foreground: 0 0% 96%;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 3%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 3%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 250 100% 70%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 250 100% 70%;
   }
 }
 
@@ -85,6 +89,10 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -98,18 +106,11 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
-  /* Premium typography */
   h1, h2, h3, h4, h5, h6 {
-    @apply font-semibold tracking-tight;
+    @apply font-bold tracking-tighter text-foreground uppercase;
   }
 
-  /* Smooth scrolling */
   html {
     scroll-behavior: smooth;
-  }
-
-  /* Enhanced focus states */
-  *:focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 }
