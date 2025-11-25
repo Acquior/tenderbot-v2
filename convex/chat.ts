@@ -27,12 +27,8 @@ export const ask = action({
       throw new Error("Question cannot be empty");
     }
 
-    const identity = await ctx.runQuery(internal.auth.getCurrentUser);
-    if (!identity) {
-      throw new Error("Unauthorized");
-    }
-
-    // Internal tool - no organization filtering needed
+    // Verify user is authenticated (throws if not)
+    await ctx.runQuery(internal.auth.getCurrentUser);
 
     const systemInstructions = [
       "You are TenderBot, a precise tender analyst.",

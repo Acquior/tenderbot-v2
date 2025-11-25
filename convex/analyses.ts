@@ -4,6 +4,7 @@ import { requireUser } from "./auth";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { TenderAnalysisSchema, z } from "@tenderbot/contracts";
+import { coerceTimestamp } from "./lib/timeUtils";
 
 /**
  * Create a queued analysis record for a bundle
@@ -603,36 +604,7 @@ function normalizeTenderAnalysis(raw: any) {
   return normalized;
 }
 
-function coerceTimestamp(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    if (value > 1_000_000_000_000) {
-      return value;
-    }
-    if (value > 1_000_000_000) {
-      return value * 1000;
-    }
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const numeric = Number(value);
-    if (!Number.isNaN(numeric)) {
-      if (numeric > 1_000_000_000_000) {
-        return numeric;
-      }
-      if (numeric > 1_000_000_000) {
-        return numeric * 1000;
-      }
-    }
-
-    const parsed = Date.parse(value);
-    if (!Number.isNaN(parsed)) {
-      return parsed;
-    }
-  }
-
-  return undefined;
-}
+// coerceTimestamp is now imported from ./lib/timeUtils
 
 function normalizeSubmissionMethod(value: unknown): "online" | "email" | "physical" {
   if (typeof value === "string") {
@@ -711,6 +683,7 @@ export const listByBundle = query({
 /**
  * List all analyses
  * Note: Internal tool - all authenticated users can see all analyses
+ * OPTIMIZED: Uses by_status index when status is provided
  */
 export const list = query({
   args: {
@@ -726,18 +699,22 @@ export const list = query({
   },
   handler: async (ctx, args) => {
     await requireUser(ctx);
+    const limit = args.limit ?? 50;
 
-    let analyses = await ctx.db
+    // Use index when status is provided for better performance
+    if (args.status) {
+      return await ctx.db
+        .query("analyses")
+        .withIndex("by_status", (q) => q.eq("status", args.status))
+        .order("desc")
+        .take(limit);
+    }
+
+    return await ctx.db
       .query("analyses")
       .withIndex("by_created_at")
       .order("desc")
-      .take(args.limit ?? 50);
-
-    if (args.status) {
-      analyses = analyses.filter((a) => a.status === args.status);
-    }
-
-    return analyses;
+      .take(limit);
   },
 });
 
@@ -745,6 +722,7 @@ export const list = query({
  * LIGHTWEIGHT: List analyses without large result/error fields
  * Use this for listing pages where you don't need full analysis data
  * Note: Internal tool - all authenticated users can see all analyses
+ * OPTIMIZED: Uses by_status index when status is provided
  */
 export const listLightweight = query({
   args: {
@@ -760,16 +738,20 @@ export const listLightweight = query({
   },
   handler: async (ctx, args) => {
     await requireUser(ctx);
+    const limit = args.limit ?? 50;
 
-    let analyses = await ctx.db
-      .query("analyses")
-      .withIndex("by_created_at")
-      .order("desc")
-      .take(args.limit ?? 50);
-
-    if (args.status) {
-      analyses = analyses.filter((a) => a.status === args.status);
-    }
+    // Use index when status is provided for better performance
+    const analyses = args.status
+      ? await ctx.db
+          .query("analyses")
+          .withIndex("by_status", (q) => q.eq("status", args.status))
+          .order("desc")
+          .take(limit)
+      : await ctx.db
+          .query("analyses")
+          .withIndex("by_created_at")
+          .order("desc")
+          .take(limit);
 
     // Project only needed fields, EXCLUDE large result/error objects
     return analyses.map((a) => ({

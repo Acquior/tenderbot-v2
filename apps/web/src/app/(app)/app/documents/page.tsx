@@ -1,21 +1,16 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useMutation, useQuery } from "convex/react";
-import { Upload, Activity, FolderCheck, Shield, RefreshCw, X, Package } from "lucide-react";
+import { useQuery } from "convex/react";
+import { Upload } from "lucide-react";
 import { api } from "@convex/_generated/api";
-import type { Doc, Id } from "@convex/_generated/dataModel";
+import type { Id } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-
-interface UploadState {
-  filename: string;
-  status: "idle" | "uploading" | "success" | "error";
-  message?: string;
-}
+import { useDocumentUpload } from "./hooks/useDocumentUpload";
+import { StatsCards } from "./components/StatsCards";
+import { DocumentRow } from "./components/DocumentRow";
+import { ACCEPTED_FILE_TYPES } from "./constants";
 
 type DocumentsListArgs = {
   limit?: number;
@@ -24,136 +19,20 @@ type DocumentsListArgs = {
 
 export default function DocumentsPage() {
   const { isLoaded, isSignedIn } = useAuth();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [uploadState, setUploadState] = useState<UploadState | null>(null);
 
   const documentsArgs: DocumentsListArgs | "skip" =
     isLoaded && isSignedIn ? { limit: 50 } : "skip";
-
   const documents = useQuery(api.documents.list, documentsArgs);
 
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const createDocument = useMutation(api.documents.create);
-  const enqueueIngestion = useMutation(api.jobs.enqueueDocumentIngestion);
-  const pipelineCount =
-    documents?.filter((doc) => doc.status !== "ready" && doc.status !== "failed").length ?? 0;
-  const totalSize = documents?.reduce((total, doc) => total + doc.size, 0) ?? 0;
+  const {
+    fileInputRef,
+    uploadState,
+    handleUploadClick,
+    handleFileChange,
+    isUploading,
+  } = useDocumentUpload(isSignedIn ?? false);
 
   const canUpload = isSignedIn;
-
-  const stats = useMemo(
-    () => [
-      {
-        title: "Processing Pipeline",
-        metric: pipelineCount.toString(),
-        description:
-          "OCR, chunking, and embeddings tracked in real time with retry logic",
-        icon: Activity,
-      },
-      {
-        title: "Bundle Management",
-        metric: (documents?.length ?? 0).toString(),
-        description: "Automatic grouping with duplicate detection and completeness tracking",
-        icon: FolderCheck,
-      },
-      {
-        title: "Storage & Security",
-        metric: totalSize ? formatFileSize(totalSize) : "—",
-        description: "Secure storage with org-level access control and audit logging",
-        icon: Shield,
-      },
-    ],
-    [documents?.length, pipelineCount, totalSize]
-  );
-
-  const handleUploadClick = () => {
-    if (!isSignedIn) {
-      setUploadState({
-        filename: "",
-        status: "error",
-        message: "Sign in to upload documents.",
-      });
-      return;
-    }
-
-    if (!fileInputRef.current) {
-      setUploadState({
-        filename: "",
-        status: "error",
-        message: "File picker unavailable. Please reload and try again.",
-      });
-      return;
-    }
-
-    fileInputRef.current.click();
-  };
-
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) {
-      return;
-    }
-
-    if (!isSignedIn) {
-      setUploadState({
-        filename: "",
-        status: "error",
-        message: "Sign in to upload documents.",
-      });
-      return;
-    }
-
-    const selectedFiles = Array.from(files);
-    let lastFileName = "";
-
-    try {
-      for (const file of selectedFiles) {
-        lastFileName = file.name;
-        setUploadState({ filename: file.name, status: "uploading" });
-
-        const uploadUrl = await generateUploadUrl();
-
-        const uploadResponse = await fetch(uploadUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
-          },
-          body: file,
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(`Upload failed with status ${uploadResponse.status}`);
-        }
-
-        const { storageId } = (await uploadResponse.json()) as { storageId: string };
-        if (!storageId) {
-          throw new Error("Missing storageId in upload response");
-        }
-
-        const documentId = await createDocument({
-          filename: file.name,
-          mimeType: file.type || "application/octet-stream",
-          size: file.size,
-          storageId,
-        });
-
-        await enqueueIngestion({ documentId });
-        setUploadState({
-          filename: file.name,
-          status: "success",
-          message: "Upload complete — ingestion queued.",
-        });
-      }
-    } catch (error) {
-      console.error("Failed to upload document", error);
-      const message = error instanceof Error ? error.message : "Unknown error";
-      setUploadState({ filename: lastFileName, status: "error", message });
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
-  };
 
   if (!isLoaded) {
     return (
@@ -177,6 +56,7 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
           <h2 className="text-2xl font-semibold tracking-tight">Documents</h2>
@@ -189,7 +69,7 @@ export default function DocumentsPage() {
             id="document-upload-input"
             ref={fileInputRef}
             type="file"
-            accept="application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+            accept={ACCEPTED_FILE_TYPES}
             className="sr-only"
             tabIndex={-1}
             onChange={handleFileChange}
@@ -199,15 +79,16 @@ export default function DocumentsPage() {
             type="button"
             className="gap-2"
             onClick={handleUploadClick}
-            disabled={uploadState?.status === "uploading" || !canUpload}
+            disabled={isUploading || !canUpload}
             aria-describedby={uploadState?.message ? "upload-status" : undefined}
           >
             <Upload className="h-4 w-4" />
-            {uploadState?.status === "uploading" ? "Uploading…" : "Upload Documents"}
+            {isUploading ? "Uploading…" : "Upload Documents"}
           </Button>
         </div>
       </div>
 
+      {/* Upload Status */}
       {uploadState?.message && (
         <p
           id="upload-status"
@@ -219,24 +100,10 @@ export default function DocumentsPage() {
         </p>
       )}
 
-      <div className="grid gap-6 md:grid-cols-3">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          return (
-            <Card key={stat.title} className="border-border/40">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
-                <Icon className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="text-2xl font-semibold">{stat.metric}</div>
-                <p className="text-xs text-muted-foreground leading-relaxed">{stat.description}</p>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+      {/* Stats Cards */}
+      <StatsCards documents={documents} />
 
+      {/* Document List */}
       <Card className="border-border/40">
         <CardHeader>
           <CardTitle className="text-base">Recent Documents</CardTitle>
@@ -255,14 +122,15 @@ export default function DocumentsPage() {
               </div>
               <p className="text-sm font-medium mb-1">No documents yet</p>
               <p className="text-xs text-muted-foreground mb-4 max-w-sm">
-                Upload your first tender document to begin automated processing and analysis.
+                Upload your first tender document to begin automated processing and
+                analysis.
               </p>
               <Button
                 size="sm"
                 variant="outline"
                 type="button"
                 onClick={handleUploadClick}
-                disabled={uploadState?.status === "uploading" || !canUpload}
+                disabled={isUploading || !canUpload}
               >
                 Upload Documents
               </Button>
@@ -280,261 +148,4 @@ export default function DocumentsPage() {
       </Card>
     </div>
   );
-}
-
-type DocumentStatus = Doc<"documents">["status"];
-type JobStatus = Doc<"jobs">["status"];
-
-const STATUS_STAGE_LABELS: Record<DocumentStatus, string> = {
-  uploading: "Uploading",
-  uploaded: "Queued",
-  processing: "Detecting characteristics",
-  ocr_in_progress: "OCR in progress",
-  ocr_failed: "OCR failed",
-  chunking: "Chunking",
-  embedding: "Embedding",
-  ready: "Ready",
-  failed: "Failed",
-};
-
-const STATUS_BADGE_VARIANT: Partial<Record<DocumentStatus, "secondary" | "destructive" | "outline">> =
-  {
-    ready: "secondary",
-    failed: "destructive",
-    ocr_failed: "destructive",
-    uploading: "outline",
-    uploaded: "outline",
-    processing: "outline",
-    ocr_in_progress: "outline",
-    chunking: "outline",
-    embedding: "outline",
-  };
-
-const ACTIVE_JOB_STATUSES: JobStatus[] = ["running", "pending", "retrying"];
-
-function DocumentRow({ document }: { document: Doc<"documents"> }) {
-  const [retryPending, setRetryPending] = useState(false);
-  const [cancelPending, setCancelPending] = useState(false);
-
-  const jobs = useQuery(api.jobs.getJobsForDocument, { documentId: document._id });
-  const bundle = useQuery(
-    api.bundles.get,
-    document.bundleId ? { id: document.bundleId } : "skip"
-  );
-  const bundleJobs = useQuery(
-    api.jobs.getJobsForBundle,
-    document.bundleId ? { bundleId: document.bundleId } : "skip"
-  );
-
-  const retryJob = useMutation(api.jobs.retry);
-  const cancelJob = useMutation(api.jobs.cancel);
-
-  const sortedJobs = useMemo(() => {
-    if (!jobs) {
-      return [] as Doc<"jobs">[];
-    }
-
-    return [...jobs].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  }, [jobs]);
-
-  const activeJob = sortedJobs.find((job) => ACTIVE_JOB_STATUSES.includes(job.status));
-  const latestJob = sortedJobs[0];
-  const displayJob = activeJob ?? latestJob;
-  const failedJob = sortedJobs.find((job) => job.status === "failed");
-
-  const progress = displayJob?.progress;
-  const progressValue =
-    progress && progress.total > 0
-      ? Math.min(100, Math.round((progress.current / progress.total) * 100))
-      : undefined;
-
-  const statusVariant =
-    STATUS_BADGE_VARIANT[document.status] ?? (document.status === "ready" ? "secondary" : "outline");
-  const stageLabel =
-    STATUS_STAGE_LABELS[document.status] ?? document.status.replaceAll("_", " ");
-
-  const handleRetry = async () => {
-    if (!failedJob) {
-      return;
-    }
-
-    try {
-      setRetryPending(true);
-      await retryJob({ jobId: failedJob._id });
-    } catch (error) {
-      console.error("Failed to retry job", error);
-    } finally {
-      setRetryPending(false);
-    }
-  };
-
-  const handleCancel = async () => {
-    if (!activeJob) {
-      return;
-    }
-
-    try {
-      setCancelPending(true);
-      await cancelJob({ jobId: activeJob._id });
-    } catch (error) {
-      console.error("Failed to cancel job", error);
-    } finally {
-      setCancelPending(false);
-    }
-  };
-
-  const bundleCompleteness =
-    bundle?.completeness?.score !== undefined
-      ? Math.round(bundle.completeness.score * 100)
-      : undefined;
-  const bundleDetectionLabel = bundle
-    ? bundle.metadata?.detectedAt
-      ? "Auto-detected"
-      : "Manual"
-    : "";
-
-  const canRetry = !!failedJob;
-  const canCancel = !!activeJob;
-
-  // Bundle analysis job
-  const bundleAnalysisJobs = bundleJobs
-    ? bundleJobs.filter((job) => job.type === "analyze_opportunity")
-    : [];
-  const activeBundleJob = bundleAnalysisJobs.find((job) =>
-    ACTIVE_JOB_STATUSES.includes(job.status)
-  );
-  const bundleProgress = activeBundleJob?.progress;
-  const bundleProgressValue =
-    bundleProgress && bundleProgress.total > 0
-      ? Math.min(100, Math.round((bundleProgress.current / bundleProgress.total) * 100))
-      : undefined;
-
-  return (
-    <div className="border border-border/40 rounded-lg p-4 space-y-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <p className="font-medium text-sm truncate text-foreground">{document.filename}</p>
-            {bundle && (
-              <Badge variant="outline" className="gap-1 flex-shrink-0">
-                <Package className="h-3 w-3" />
-                {bundle.name}
-              </Badge>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-            <span>{formatFileSize(document.size)}</span>
-            <span>{new Date(document.createdAt).toLocaleString()}</span>
-            {document.metadata?.pageCount && <span>{document.metadata.pageCount} pages</span>}
-            {document.metadata?.ocrMethod && (
-              <span className="capitalize">
-                {document.metadata.ocrMethod.replace("-", " ")} extraction
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <Badge variant={statusVariant}>{stageLabel}</Badge>
-          {canRetry && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1"
-              onClick={handleRetry}
-              disabled={retryPending}
-            >
-              <RefreshCw className="h-3 w-3" />
-              Retry
-            </Button>
-          )}
-          {canCancel && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1"
-              onClick={handleCancel}
-              disabled={cancelPending}
-            >
-              <X className="h-3 w-3" />
-              Cancel
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {displayJob && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{displayJob.progress?.message ?? "Processing…"}</span>
-            {progress && (
-              <span>
-                {progress.current} / {progress.total}
-              </span>
-            )}
-          </div>
-          {progressValue !== undefined && (
-            <Progress value={progressValue} className="h-1.5" aria-label="Ingestion progress" />
-          )}
-          {displayJob.status === "failed" && displayJob.error?.message && (
-            <p className="text-xs text-destructive">{displayJob.error.message}</p>
-          )}
-        </div>
-      )}
-
-      {activeBundleJob && (
-        <div className="space-y-2 border-t border-border/40 pt-3">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span className="font-medium">Bundle Analysis</span>
-            {bundleProgress && (
-              <span>
-                {bundleProgress.current} / {bundleProgress.total}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{bundleProgress?.message ?? "Analyzing…"}</span>
-          </div>
-          {bundleProgressValue !== undefined && (
-            <Progress
-              value={bundleProgressValue}
-              className="h-1.5"
-              aria-label="Bundle analysis progress"
-            />
-          )}
-          {activeBundleJob.status === "failed" && activeBundleJob.error?.message && (
-            <p className="text-xs text-destructive">{activeBundleJob.error.message}</p>
-          )}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-        {bundle ? (
-          <>
-            <span className="flex items-center gap-1">
-              <Badge variant="outline" className="uppercase">
-                {bundleDetectionLabel || "Manual"}
-              </Badge>
-              <span>Status: {bundle.status.replaceAll("_", " ")}</span>
-            </span>
-            {bundleCompleteness !== undefined && (
-              <span>Completeness: {bundleCompleteness}%</span>
-            )}
-          </>
-        ) : document.bundleId ? (
-          <span>Loading bundle details…</span>
-        ) : (
-          <span>No bundle detected</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function formatFileSize(sizeInBytes: number): string {
-  if (sizeInBytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(sizeInBytes) / Math.log(1024)), units.length - 1);
-  const size = sizeInBytes / Math.pow(1024, index);
-  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
 }

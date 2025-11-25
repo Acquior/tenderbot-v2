@@ -6,6 +6,20 @@ import {
   query,
 } from "./_generated/server";
 import { requireUser } from "./auth";
+import {
+  ageInDays,
+  ageInHours,
+  daysAgo,
+  hoursAgo,
+  MS_PER_DAY,
+} from "./lib/timeUtils";
+import {
+  deleteDocumentWithRelatedData,
+  deleteDocumentsBatch,
+  deleteOldItemsKeepingRecent,
+  estimateChunkStorageMB,
+  bytesToMB,
+} from "./lib/cleanupUtils";
 
 /**
  * ============================================================================
@@ -35,33 +49,24 @@ export const getStorageOverview = query({
 
     // Count documents
     const allDocs = await ctx.db.query("documents").collect();
-
-    // Count chunks
     const allChunks = await ctx.db.query("chunks").collect();
-
-    // Count jobs
     const allJobs = await ctx.db.query("jobs").collect();
-
-    // Count analyses
     const allAnalyses = await ctx.db.query("analyses").collect();
 
     // Categorize by status
-    const failedDocs = allDocs.filter((d) => d.status === "failed" || d.status === "ocr_failed");
-    const oldDocs = allDocs.filter((d) => {
-      const ageInDays = (Date.now() - d.createdAt) / (1000 * 60 * 60 * 24);
-      return ageInDays > 30;
-    });
+    const failedDocs = allDocs.filter(
+      (d) => d.status === "failed" || d.status === "ocr_failed"
+    );
+    const oldDocs = allDocs.filter((d) => ageInDays(d.createdAt) > 30);
 
     const completedJobs = allJobs.filter((j) => j.status === "completed");
     const failedJobs = allJobs.filter((j) => j.status === "failed");
-    const oldJobs = allJobs.filter((j) => {
-      const ageInDays = (Date.now() - j.createdAt) / (1000 * 60 * 60 * 24);
-      return ageInDays > 7;
-    });
+    const oldJobs = allJobs.filter((j) => ageInDays(j.createdAt) > 7);
 
-    // Calculate estimated storage (rough estimates)
-    const estimatedChunkStorageMB = (allChunks.length * 6.5) / 1024; // ~6.5KB per chunk with embedding
-    const estimatedDocStorageMB = allDocs.reduce((acc, d) => acc + d.size, 0) / (1024 * 1024);
+    // Calculate estimated storage
+    const estimatedChunkStorageMB = estimateChunkStorageMB(allChunks.length);
+    const estimatedDocStorageMB =
+      allDocs.reduce((acc, d) => acc + d.size, 0) / (1024 * 1024);
 
     return {
       documents: {
@@ -118,7 +123,7 @@ export const listCleanupCandidates = query({
   handler: async (ctx, args) => {
     await requireUser(ctx);
     const cutoffDays = args.daysOld ?? 30;
-    const cutoffTime = Date.now() - cutoffDays * 24 * 60 * 60 * 1000;
+    const cutoffTime = daysAgo(cutoffDays);
 
     if (args.type === "failed_documents") {
       const docs = await ctx.db.query("documents").collect();
@@ -130,7 +135,7 @@ export const listCleanupCandidates = query({
           size: d.size,
           status: d.status,
           createdAt: d.createdAt,
-          ageInDays: Math.floor((Date.now() - d.createdAt) / (1000 * 60 * 60 * 24)),
+          ageInDays: ageInDays(d.createdAt),
         }));
     }
 
@@ -144,7 +149,7 @@ export const listCleanupCandidates = query({
           size: d.size,
           status: d.status,
           createdAt: d.createdAt,
-          ageInDays: Math.floor((Date.now() - d.createdAt) / (1000 * 60 * 60 * 24)),
+          ageInDays: ageInDays(d.createdAt),
         }));
     }
 
@@ -158,7 +163,7 @@ export const listCleanupCandidates = query({
           type: j.type,
           status: j.status,
           createdAt: j.createdAt,
-          ageInDays: Math.floor((Date.now() - j.createdAt) / (1000 * 60 * 60 * 24)),
+          ageInDays: ageInDays(j.createdAt),
         }));
     }
 
@@ -171,7 +176,7 @@ export const listCleanupCandidates = query({
           type: j.type,
           status: j.status,
           createdAt: j.createdAt,
-          ageInDays: Math.floor((Date.now() - j.createdAt) / (1000 * 60 * 60 * 24)),
+          ageInDays: ageInDays(j.createdAt),
         }));
     }
 
@@ -198,30 +203,12 @@ export const deleteDocumentWithData = mutation({
       throw new Error("Document not found");
     }
 
-    // Delete all chunks for this document
-    const chunks = await ctx.db
-      .query("chunks")
-      .withIndex("by_document", (q) => q.eq("documentId", args.documentId))
-      .collect();
-
-    for (const chunk of chunks) {
-      await ctx.db.delete(chunk._id);
-    }
-
-    // Delete the file from storage
-    try {
-      await ctx.storage.delete(document.storageId as any);
-    } catch (e) {
-      console.warn(`Failed to delete storage file ${document.storageId}:`, e);
-    }
-
-    // Delete the document record
-    await ctx.db.delete(args.documentId);
+    const result = await deleteDocumentWithRelatedData(ctx, args.documentId);
 
     return {
       success: true,
-      deletedChunks: chunks.length,
-      freedBytes: document.size,
+      deletedChunks: result.chunksDeleted,
+      freedBytes: result.bytesFreed,
     };
   },
 });
@@ -239,40 +226,16 @@ export const deleteFailedDocuments = mutation({
       (d) => d.status === "failed" || d.status === "ocr_failed"
     );
 
-    let deletedCount = 0;
-    let freedBytes = 0;
-    let deletedChunks = 0;
-
-    for (const doc of failedDocs) {
-      // Delete chunks
-      const chunks = await ctx.db
-        .query("chunks")
-        .withIndex("by_document", (q) => q.eq("documentId", doc._id))
-        .collect();
-
-      for (const chunk of chunks) {
-        await ctx.db.delete(chunk._id);
-        deletedChunks++;
-      }
-
-      // Delete storage file
-      try {
-        await ctx.storage.delete(doc.storageId as any);
-      } catch (e) {
-        console.warn(`Failed to delete storage file ${doc.storageId}:`, e);
-      }
-
-      // Delete document
-      await ctx.db.delete(doc._id);
-      deletedCount++;
-      freedBytes += doc.size;
-    }
+    const stats = await deleteDocumentsBatch(
+      ctx,
+      failedDocs.map((d) => d._id)
+    );
 
     return {
       success: true,
-      deletedDocuments: deletedCount,
-      deletedChunks,
-      freedMB: (freedBytes / (1024 * 1024)).toFixed(2),
+      deletedDocuments: stats.deletedDocuments,
+      deletedChunks: stats.deletedChunks,
+      freedMB: bytesToMB(stats.freedBytes),
     };
   },
 });
@@ -282,14 +245,14 @@ export const deleteFailedDocuments = mutation({
  */
 export const deleteOldJobs = mutation({
   args: {
-    keepRecent: v.optional(v.number()), // How many recent jobs to keep per type
+    keepRecent: v.optional(v.number()),
     olderThanDays: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     await requireUser(ctx);
     const keepRecent = args.keepRecent ?? 5;
     const olderThanDays = args.olderThanDays ?? 7;
-    const cutoffTime = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+    const cutoffTime = daysAgo(olderThanDays);
 
     const jobs = await ctx.db.query("jobs").collect();
 
@@ -305,18 +268,13 @@ export const deleteOldJobs = mutation({
 
     let deletedCount = 0;
 
-    for (const [, groupJobs] of Object.entries(jobsByTypeAndStatus)) {
-      // Sort by creation date (newest first)
-      const sorted = groupJobs.sort((a, b) => b.createdAt - a.createdAt);
-
-      // Keep recent ones, delete the rest if they're old enough
-      for (let i = keepRecent; i < sorted.length; i++) {
-        const job = sorted[i];
-        if (job.createdAt < cutoffTime) {
-          await ctx.db.delete(job._id);
-          deletedCount++;
-        }
-      }
+    for (const groupJobs of Object.values(jobsByTypeAndStatus)) {
+      deletedCount += await deleteOldItemsKeepingRecent(
+        ctx,
+        groupJobs,
+        keepRecent,
+        cutoffTime
+      );
     }
 
     return {
@@ -334,11 +292,9 @@ export const deleteOrphanedChunks = mutation({
   handler: async (ctx) => {
     await requireUser(ctx);
 
-    // Get all document IDs
     const docs = await ctx.db.query("documents").collect();
     const docIds = new Set(docs.map((d) => d._id));
 
-    // Get all chunks
     const chunks = await ctx.db.query("chunks").collect();
 
     let deletedCount = 0;
@@ -352,7 +308,7 @@ export const deleteOrphanedChunks = mutation({
     return {
       success: true,
       deletedChunks: deletedCount,
-      estimatedFreedMB: ((deletedCount * 6.5) / 1024).toFixed(2),
+      estimatedFreedMB: estimateChunkStorageMB(deletedCount).toFixed(2),
     };
   },
 });
@@ -369,7 +325,7 @@ export const deleteOldAnalyses = mutation({
     await requireUser(ctx);
     const keepPerBundle = args.keepPerBundle ?? 1;
     const olderThanDays = args.olderThanDays ?? 30;
-    const cutoffTime = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+    const cutoffTime = daysAgo(olderThanDays);
 
     const analyses = await ctx.db.query("analyses").collect();
 
@@ -385,18 +341,13 @@ export const deleteOldAnalyses = mutation({
 
     let deletedCount = 0;
 
-    for (const [, bundleAnalyses] of Object.entries(analysesByBundle)) {
-      // Sort by creation date (newest first)
-      const sorted = bundleAnalyses.sort((a, b) => b.createdAt - a.createdAt);
-
-      // Keep recent ones, delete the rest if they're old enough
-      for (let i = keepPerBundle; i < sorted.length; i++) {
-        const analysis = sorted[i];
-        if (analysis.createdAt < cutoffTime) {
-          await ctx.db.delete(analysis._id);
-          deletedCount++;
-        }
-      }
+    for (const bundleAnalyses of Object.values(analysesByBundle)) {
+      deletedCount += await deleteOldItemsKeepingRecent(
+        ctx,
+        bundleAnalyses,
+        keepPerBundle,
+        cutoffTime
+      );
     }
 
     return {
@@ -411,7 +362,7 @@ export const deleteOldAnalyses = mutation({
  */
 export const deleteAllData = mutation({
   args: {
-    confirmPhrase: v.string(), // Must be "DELETE ALL DATA"
+    confirmPhrase: v.string(),
   },
   handler: async (ctx, args) => {
     if (args.confirmPhrase !== "DELETE ALL DATA") {
@@ -420,7 +371,7 @@ export const deleteAllData = mutation({
 
     await requireUser(ctx);
 
-    let stats = {
+    const stats = {
       documents: 0,
       chunks: 0,
       jobs: 0,
@@ -430,24 +381,14 @@ export const deleteAllData = mutation({
       requirements: 0,
     };
 
-    // Delete documents and their storage
+    // Delete documents and their storage using helper
     const docs = await ctx.db.query("documents").collect();
-    for (const doc of docs) {
-      try {
-        await ctx.storage.delete(doc.storageId as any);
-      } catch (e) {
-        // Ignore storage deletion errors
-      }
-      await ctx.db.delete(doc._id);
-      stats.documents++;
-    }
-
-    // Delete chunks
-    const chunks = await ctx.db.query("chunks").collect();
-    for (const chunk of chunks) {
-      await ctx.db.delete(chunk._id);
-      stats.chunks++;
-    }
+    const docStats = await deleteDocumentsBatch(
+      ctx,
+      docs.map((d) => d._id)
+    );
+    stats.documents = docStats.deletedDocuments;
+    stats.chunks = docStats.deletedChunks;
 
     // Delete jobs
     const jobs = await ctx.db.query("jobs").collect();
@@ -508,7 +449,7 @@ export const getGlobalStats = internalQuery({
     const bundles = await ctx.db.query("bundles").collect();
 
     const totalDocSize = documents.reduce((acc, d) => acc + d.size, 0);
-    const estimatedChunkSize = chunks.length * 6500; // ~6.5KB per chunk
+    const estimatedChunkSize = chunks.length * 6500;
 
     return {
       counts: {
@@ -533,9 +474,9 @@ export const getGlobalStats = internalQuery({
         {} as Record<string, number>
       ),
       estimatedStorageMB: {
-        documents: (totalDocSize / (1024 * 1024)).toFixed(2),
-        chunks: (estimatedChunkSize / (1024 * 1024)).toFixed(2),
-        total: ((totalDocSize + estimatedChunkSize) / (1024 * 1024)).toFixed(2),
+        documents: bytesToMB(totalDocSize),
+        chunks: bytesToMB(estimatedChunkSize),
+        total: bytesToMB(totalDocSize + estimatedChunkSize),
       },
     };
   },
@@ -552,40 +493,16 @@ export const adminDeleteAllFailedDocuments = internalMutation({
       (d) => d.status === "failed" || d.status === "ocr_failed"
     );
 
-    let deletedCount = 0;
-    let freedBytes = 0;
-    let deletedChunks = 0;
-
-    for (const doc of failedDocs) {
-      // Delete chunks
-      const chunks = await ctx.db
-        .query("chunks")
-        .withIndex("by_document", (q) => q.eq("documentId", doc._id))
-        .collect();
-
-      for (const chunk of chunks) {
-        await ctx.db.delete(chunk._id);
-        deletedChunks++;
-      }
-
-      // Delete storage file
-      try {
-        await ctx.storage.delete(doc.storageId as any);
-      } catch (e) {
-        console.warn(`Failed to delete storage file ${doc.storageId}:`, e);
-      }
-
-      // Delete document
-      await ctx.db.delete(doc._id);
-      deletedCount++;
-      freedBytes += doc.size;
-    }
+    const stats = await deleteDocumentsBatch(
+      ctx,
+      failedDocs.map((d) => d._id)
+    );
 
     return {
       success: true,
-      deletedDocuments: deletedCount,
-      deletedChunks,
-      freedMB: (freedBytes / (1024 * 1024)).toFixed(2),
+      deletedDocuments: stats.deletedDocuments,
+      deletedChunks: stats.deletedChunks,
+      freedMB: bytesToMB(stats.freedBytes),
     };
   },
 });
@@ -597,7 +514,13 @@ export const adminListStuckDocuments = internalQuery({
   args: {},
   handler: async (ctx) => {
     const docs = await ctx.db.query("documents").collect();
-    const stuckStatuses = ["chunking", "embedding", "processing", "ocr_in_progress", "uploading"];
+    const stuckStatuses = [
+      "chunking",
+      "embedding",
+      "processing",
+      "ocr_in_progress",
+      "uploading",
+    ];
 
     return docs
       .filter((d) => stuckStatuses.includes(d.status))
@@ -606,7 +529,7 @@ export const adminListStuckDocuments = internalQuery({
         filename: d.filename,
         status: d.status,
         size: d.size,
-        ageHours: Math.floor((Date.now() - d.createdAt) / (1000 * 60 * 60)),
+        ageHours: ageInHours(d.createdAt),
         createdAt: new Date(d.createdAt).toISOString(),
       }));
   },
@@ -620,50 +543,32 @@ export const adminDeleteStuckDocuments = internalMutation({
     olderThanHours: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const olderThanHours = args.olderThanHours ?? 1; // Default: stuck for more than 1 hour
-    const cutoffTime = Date.now() - olderThanHours * 60 * 60 * 1000;
+    const olderThanHours = args.olderThanHours ?? 1;
+    const cutoffTime = hoursAgo(olderThanHours);
 
     const docs = await ctx.db.query("documents").collect();
-    const stuckStatuses = ["chunking", "embedding", "processing", "ocr_in_progress", "uploading"];
+    const stuckStatuses = [
+      "chunking",
+      "embedding",
+      "processing",
+      "ocr_in_progress",
+      "uploading",
+    ];
 
     const stuckDocs = docs.filter(
       (d) => stuckStatuses.includes(d.status) && d.createdAt < cutoffTime
     );
 
-    let deletedCount = 0;
-    let freedBytes = 0;
-    let deletedChunks = 0;
-
-    for (const doc of stuckDocs) {
-      // Delete chunks
-      const chunks = await ctx.db
-        .query("chunks")
-        .withIndex("by_document", (q) => q.eq("documentId", doc._id))
-        .collect();
-
-      for (const chunk of chunks) {
-        await ctx.db.delete(chunk._id);
-        deletedChunks++;
-      }
-
-      // Delete storage file
-      try {
-        await ctx.storage.delete(doc.storageId as any);
-      } catch (e) {
-        console.warn(`Failed to delete storage file ${doc.storageId}:`, e);
-      }
-
-      // Delete document
-      await ctx.db.delete(doc._id);
-      deletedCount++;
-      freedBytes += doc.size;
-    }
+    const stats = await deleteDocumentsBatch(
+      ctx,
+      stuckDocs.map((d) => d._id)
+    );
 
     return {
       success: true,
-      deletedDocuments: deletedCount,
-      deletedChunks,
-      freedMB: (freedBytes / (1024 * 1024)).toFixed(2),
+      deletedDocuments: stats.deletedDocuments,
+      deletedChunks: stats.deletedChunks,
+      freedMB: bytesToMB(stats.freedBytes),
     };
   },
 });
@@ -676,7 +581,7 @@ export const adminPurgeOldJobs = internalMutation({
     olderThanDays: v.number(),
   },
   handler: async (ctx, args) => {
-    const cutoffTime = Date.now() - args.olderThanDays * 24 * 60 * 60 * 1000;
+    const cutoffTime = daysAgo(args.olderThanDays);
 
     const jobs = await ctx.db.query("jobs").collect();
     const oldJobs = jobs.filter(
@@ -722,15 +627,12 @@ export const adminDeleteOldAnalyses = internalMutation({
 
     let deletedCount = 0;
 
-    for (const [, bundleAnalyses] of Object.entries(analysesByBundle)) {
-      // Sort by creation date (newest first)
-      const sorted = bundleAnalyses.sort((a, b) => b.createdAt - a.createdAt);
-
-      // Delete all except the most recent N
-      for (let i = keepPerBundle; i < sorted.length; i++) {
-        await ctx.db.delete(sorted[i]._id);
-        deletedCount++;
-      }
+    for (const bundleAnalyses of Object.values(analysesByBundle)) {
+      deletedCount += await deleteOldItemsKeepingRecent(
+        ctx,
+        bundleAnalyses,
+        keepPerBundle
+      );
     }
 
     return {
@@ -762,7 +664,7 @@ export const adminDeleteOrphanedChunks = internalMutation({
     return {
       success: true,
       deletedChunks: deletedCount,
-      estimatedFreedMB: ((deletedCount * 6.5) / 1024).toFixed(2),
+      estimatedFreedMB: estimateChunkStorageMB(deletedCount).toFixed(2),
     };
   },
 });

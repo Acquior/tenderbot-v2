@@ -8,6 +8,13 @@ import {
   query,
 } from "./_generated/server";
 import { requireUser } from "./auth";
+import {
+  isRetryableError,
+  normalizeRequirements,
+  normalizeRisks,
+  safeString,
+  normalizeTimestamp,
+} from "./lib/jobUtils";
 
 type StageId = "detect" | "ocr" | "chunk" | "embedding" | "gemini_upload" | "finalize";
 
@@ -444,18 +451,12 @@ export const processDocumentIngestion = internalAction({
         status: "failed",
       });
 
-      // Determine if error is retryable
-      const isNetworkError =
-        error instanceof Error &&
-        (error.message.includes("fetch") ||
-          error.message.includes("network") ||
-          error.message.includes("timeout") ||
-          error.message.includes("rate limit"));
+      const retryable = error instanceof Error && isRetryableError(error);
 
       await ctx.runMutation(internal.jobs.markJobFailedWithRetry, {
         jobId: args.jobId,
         message: error instanceof Error ? error.message : "Unknown error",
-        retryable: isNetworkError,
+        retryable,
       });
 
       throw error;
@@ -897,104 +898,9 @@ export const processBundleAnalysis = internalAction({
       const analysisMetadataExtras = extraction.analysisMetadataExtras ?? {};
       const geminiTenderAnalysis = extraction.geminiTenderAnalysis;
 
-      const requirements = (data.requirements ?? []).reduce(
-        (
-          acc: Array<{
-          id: string;
-          type: "compliance" | "technical" | "commercial" | "legal" | "bee" | "eligibility" | "other";
-          description: string;
-          mandatory: boolean;
-          status: "met" | "partial" | "unknown" | "not_met";
-          confidence?: number;
-          notes?: string;
-          }>,
-          req: any,
-          index: number
-        ) => {
-          // Allow string items from the model and coerce to objects
-          if (typeof req === "string") {
-            const text = req.trim();
-            if (text.length === 0) return acc;
-            acc.push({
-              id: `req-${args.bundleId}-${index}`,
-              type: "other",
-              description: text,
-              mandatory: false,
-              status: "unknown",
-            });
-            return acc;
-          }
-
-          if (!req.description) {
-            return acc;
-          }
-
-          acc.push({
-            id: req.id ?? `req-${args.bundleId}-${index}`,
-            type: req.type ?? "other",
-            description: req.description,
-            mandatory: req.mandatory ?? false,
-            status: req.status ?? "unknown",
-            confidence: req.confidence,
-            notes: req.notes,
-          });
-
-          return acc;
-        },
-        []
-      );
-
-      const risks = (data.risks ?? []).reduce(
-        (
-          acc: Array<{
-          id: string;
-          category:
-            | "eligibility"
-            | "bee_compliance"
-            | "financial"
-            | "technical"
-            | "timeline"
-            | "commercial"
-            | "legal";
-          severity: "low" | "medium" | "high" | "critical";
-          description: string;
-          mitigation?: string;
-          likelihood?: number;
-          impact?: number;
-          }>,
-          risk: any,
-          index: number
-        ) => {
-          if (typeof risk === "string") {
-            const text = risk.trim();
-            if (text.length === 0) return acc;
-            acc.push({
-              id: `risk-${args.bundleId}-${index}`,
-              category: "commercial",
-              severity: "medium",
-              description: text,
-            });
-            return acc;
-          }
-
-          if (!risk.description) {
-            return acc;
-          }
-
-          acc.push({
-            id: risk.id ?? `risk-${args.bundleId}-${index}`,
-            category: risk.category ?? "commercial",
-            severity: risk.severity ?? "medium",
-            description: risk.description,
-            mitigation: risk.mitigation,
-            likelihood: risk.likelihood,
-            impact: risk.impact,
-          });
-
-          return acc;
-        },
-        []
-      );
+      // Use shared utilities for normalization
+      const requirements = normalizeRequirements(data.requirements ?? [], args.bundleId);
+      const risks = normalizeRisks(data.risks ?? [], args.bundleId);
 
       // Fold required submission documents into requirements as compliance items
       if (Array.isArray(data.requiredDocuments) && data.requiredDocuments.length > 0) {
@@ -1011,14 +917,10 @@ export const processBundleAnalysis = internalAction({
         );
       }
 
-      const safeTitle = data.title?.trim().length ? data.title.trim() : "Untitled Opportunity";
-      const safeIssuer = data.issuer?.trim().length ? data.issuer.trim() : "Unknown Issuer";
-      const normalizedDueDate =
-        typeof data.dueDate === "number" && !Number.isNaN(data.dueDate) ? data.dueDate : undefined;
-      const normalizedPublishedDate =
-        typeof data.publishedDate === "number" && !Number.isNaN(data.publishedDate)
-          ? data.publishedDate
-          : undefined;
+      const safeTitle = safeString(data.title, "Untitled Opportunity");
+      const safeIssuer = safeString(data.issuer, "Unknown Issuer");
+      const normalizedDueDate = normalizeTimestamp(data.dueDate);
+      const normalizedPublishedDate = normalizeTimestamp(data.publishedDate);
       const safeDueDate = normalizedDueDate ?? Date.now();
 
       console.log(`[Bundle Analysis Job] LLM extraction complete. Requirements: ${requirements.length}, Risks: ${risks.length}`);
@@ -1109,18 +1011,12 @@ export const processBundleAnalysis = internalAction({
     } catch (error) {
       console.error(`[Bundle Analysis Job] ❌ Failed:`, error);
 
-      // Determine if error is retryable
-      const isNetworkError =
-        error instanceof Error &&
-        (error.message.includes("fetch") ||
-          error.message.includes("network") ||
-          error.message.includes("timeout") ||
-          error.message.includes("rate limit"));
+      const retryable = error instanceof Error && isRetryableError(error);
 
       await ctx.runMutation(internal.jobs.markJobFailedWithRetry, {
         jobId: args.jobId,
         message: error instanceof Error ? error.message : "Unknown error",
-        retryable: isNetworkError,
+        retryable,
       });
 
       throw error;

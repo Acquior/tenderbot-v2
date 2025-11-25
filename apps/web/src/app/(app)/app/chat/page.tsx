@@ -69,7 +69,7 @@ export default function ChatPage() {
       setIsThinking(false);
       queueMicrotask(() => {
         scrollAreaRef.current?.scrollTo({
-          top: scrollAreaRef.current.scrollHeight,
+          top: scrollAreaRef.current?.scrollHeight ?? 0,
           behavior: "smooth",
         });
       });
