@@ -51,6 +51,22 @@ export const list = query({
   },
 });
 
+/**
+ * Get opportunity by bundle ID
+ * Returns the opportunity linked to a specific bundle (if exists)
+ */
+export const getByBundle = query({
+  args: { bundleId: v.id("bundles") },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const opportunity = await ctx.db
+      .query("opportunities")
+      .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+      .first();
+    return opportunity;
+  },
+});
+
 export const upsert = mutation({
   args: {
     id: v.optional(v.id("opportunities")),
@@ -107,6 +123,40 @@ export const upsert = mutation({
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
+  },
+});
+
+/**
+ * Update opportunity status
+ */
+export const updateStatus = mutation({
+  args: {
+    id: v.id("opportunities"),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("analyzing"),
+      v.literal("analysis_complete"),
+      v.literal("in_review"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("submitted"),
+      v.literal("closed")
+    ),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+
+    const opportunity = await ctx.db.get(args.id);
+    if (!opportunity) {
+      throw new Error("Opportunity not found");
+    }
+
+    await ctx.db.patch(args.id, {
+      status: args.status,
+      updatedAt: Date.now(),
+    });
+
+    return args.id;
   },
 });
 
@@ -197,5 +247,67 @@ export const createFromAnalysis = internalMutation({
     }
 
     return opportunityId;
+  },
+});
+
+/**
+ * Update the documents checklist for an opportunity (manual override)
+ */
+export const updateDocumentsChecklist = mutation({
+  args: {
+    opportunityId: v.id("opportunities"),
+    documentsChecklist: v.array(
+      v.object({
+        name: v.string(),
+        mandatory: v.boolean(),
+        instructions: v.optional(v.string()),
+        source: v.optional(
+          v.object({
+            documentId: v.optional(v.string()),
+            page: v.optional(v.number()),
+            quote: v.optional(v.string()),
+          })
+        ),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) {
+      throw new Error("Opportunity not found");
+    }
+
+    await ctx.db.patch(args.opportunityId, {
+      editedDocumentsChecklist: args.documentsChecklist,
+      updatedAt: Date.now(),
+    });
+
+    return args.opportunityId;
+  },
+});
+
+/**
+ * Reset the documents checklist to the original LLM-extracted version
+ */
+export const resetDocumentsChecklist = mutation({
+  args: {
+    opportunityId: v.id("opportunities"),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+
+    const opportunity = await ctx.db.get(args.opportunityId);
+    if (!opportunity) {
+      throw new Error("Opportunity not found");
+    }
+
+    await ctx.db.patch(args.opportunityId, {
+      editedDocumentsChecklist: undefined,
+      updatedAt: Date.now(),
+    });
+
+    return args.opportunityId;
   },
 });

@@ -18,6 +18,7 @@
     "clean": "rm -rf dist node_modules"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
     "@google/generative-ai": "^0.24.1",
     "@tenderbot/contracts": "*",
     "openai": "^4.77.3",

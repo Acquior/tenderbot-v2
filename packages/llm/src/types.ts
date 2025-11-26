@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * Supported LLM providers
  */
-export type LLMProvider = "openai" | "deepseek" | "xai" | "cohere";
+export type LLMProvider = "openai" | "deepseek" | "xai" | "cohere" | "claude";
 
 /**
  * Model configuration

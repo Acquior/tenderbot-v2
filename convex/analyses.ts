@@ -287,8 +287,9 @@ export const runAnalysisForBundle = internalAction({
 
       // Build context from already-extracted chunks instead of re-extracting from PDFs
       // This avoids pdf-parse which uses pdfjs-dist that requires structuredClone with transfer
-      const MAX_CHUNKS_PER_DOC = 100;
-      const MAX_TOTAL_CHARS = 100000;
+      // Increased limits to handle larger tender documents (50+ pages)
+      const MAX_CHUNKS_PER_DOC = 200;
+      const MAX_TOTAL_CHARS = 250000; // ~50-60 pages of dense text
       
       const textParts: string[] = [];
       let totalChars = 0;
@@ -325,10 +326,6 @@ export const runAnalysisForBundle = internalAction({
       
       const aggregatedText = textParts.join("\n");
 
-      // Import analysis functions (no longer need rag for PDF extraction)
-      const llm = await import("@tenderbot/llm");
-      const { analyzeTenderBundle } = llm;
-
       // Update analysis with input stats
       await ctx.runMutation(internal.analyses.updateToProcessing, {
         analysisId: args.analysisId,
@@ -336,16 +333,76 @@ export const runAnalysisForBundle = internalAction({
         inputChars: totalChars,
       });
 
-      // Run LLM analysis
-      const analysisResult = await analyzeTenderBundle(aggregatedText, {
-        model: analysis.model,
-        temperature: 0,
-        maxTokens: 16000,
-        promptVersion: analysis.promptVersion,
-      });
+      // Determine which analysis engine to use
+      // Priority: Claude (primary) > Legacy OpenAI
+      const hasClaudeConfig = Boolean(
+        process.env.AZURE_CLAUDE_ENDPOINT && process.env.AZURE_CLAUDE_API_KEY
+      );
+
+      console.log(`[Analysis] Using ${hasClaudeConfig ? 'Claude Sonnet 4.5' : 'Legacy OpenAI'} for analysis`);
+
+      let analysisResult: { data: any; metadata: { tokensIn: number; tokensOut: number } };
+
+      if (hasClaudeConfig) {
+        // Use Claude Sonnet 4.5 for analysis
+        const {
+          ClaudeClient,
+          getClaudeConfig,
+          buildClaudeTenderAnalysisPrompt,
+          CLAUDE_TENDER_SYSTEM_PROMPT,
+        } = await import("@tenderbot/llm");
+        const { TenderAnalysisSchema } = await import("@tenderbot/contracts");
+
+        const claudeClient = new ClaudeClient(getClaudeConfig());
+        const totalPages = documents.reduce((sum: number, d: any) => sum + (d.metadata?.pageCount || 0), 0);
+
+        const prompt = buildClaudeTenderAnalysisPrompt(
+          bundle.name ?? "Untitled Bundle",
+          documents.map((d: any) => ({
+            filename: d.filename,
+            pageCount: d.metadata?.pageCount,
+          })),
+          aggregatedText
+        );
+
+        const useExtendedThinking = claudeClient.shouldUseExtendedThinking(documents.length, totalPages);
+        console.log(`[Claude Analysis] Extended thinking: ${useExtendedThinking}, Docs: ${documents.length}, Pages: ${totalPages}`);
+
+        const result = await claudeClient.analyze(
+          prompt,
+          TenderAnalysisSchema,
+          documents.length,
+          totalPages,
+          {
+            systemPrompt: CLAUDE_TENDER_SYSTEM_PROMPT,
+            maxTokens: 16384,
+          }
+        );
+
+        console.log(`[Claude Analysis] Complete. Tokens: ${result.usage.totalTokens}`);
+
+        analysisResult = {
+          data: result.data,
+          metadata: {
+            tokensIn: result.usage.inputTokens,
+            tokensOut: result.usage.outputTokens,
+          },
+        };
+      } else {
+        // Fallback to legacy OpenAI analysis
+        const llm = await import("@tenderbot/llm");
+        const { analyzeTenderBundle } = llm;
+
+        analysisResult = await analyzeTenderBundle(aggregatedText, {
+          model: analysis.model,
+          temperature: 0,
+          maxTokens: 16000,
+          promptVersion: analysis.promptVersion,
+        });
+      }
 
       // Validate citations before saving
-      const { validateCitations } = llm;
+      const { validateCitations } = await import("@tenderbot/llm");
       const citationValidation = validateCitations(analysisResult.data);
 
       if (!citationValidation.valid) {
@@ -481,8 +538,16 @@ export const getById = internalQuery({
 
 function buildGeminiAnalysisSystemPrompt(): string {
   return [
-    "You are TenderBot, an expert tender analyst.",
-    "Read the provided tender documents via File Search and return a JSON object that strictly matches this schema:",
+    "You are TenderBot, an expert tender analyst with meticulous attention to detail.",
+    "",
+    "CRITICAL: You MUST search through the ENTIRE tender document from start to finish, including:",
+    "- ALL pages (front to back)",
+    "- ALL sections (administrative, technical, commercial, legal, annexures, appendices)",
+    "- ALL tables and lists",
+    "- ALL forms and schedules",
+    "- Look specifically for sections titled: 'Administrative Compliance', 'Required Documents', 'Returnable Documents', 'Eligibility Criteria', 'Technical Requirements', 'Evaluation Criteria', 'Submission Requirements'",
+    "",
+    "Return a JSON object that strictly matches this schema:",
     "{",
     '  "opportunity": {',
     '    "title": string,',
@@ -503,15 +568,32 @@ function buildGeminiAnalysisSystemPrompt(): string {
     '  "fees": { "tenderFee"?: number, "bidBond"?: { "amount": number, "currency": string }, "otherFees"?: Array<{ "name": string, "amount"?: number, "currency"?: string }> },',
     '  "evaluationCriteria"?: Array<{ "criterion": string, "description"?: string, "weight"?: number }>,',
     '  "summary": string,',
-    '  "documentsChecklist": Array<{ "name": string, "mandatory": boolean, "instructions"?: string, "source": { "documentId"?: string, "page"?: number, "quote"?: string } }>,',
+    '  "documentsChecklist": Array<{ "name": string (EXACT wording from tender), "mandatory": boolean, "instructions"?: string, "source": { "documentId"?: string, "page"?: number, "quote"?: string } }>,',
     '  "requirements": Array<{ "type": "compliance"|"technical"|"commercial"|"legal"|"bee"|"eligibility"|"other", "description": string, "mandatory": boolean, "status": "met"|"partial"|"unknown"|"not_met", "confidence"?: number, "notes"?: string }>,',
     '  "risks": Array<{ "category": "eligibility"|"bee_compliance"|"financial"|"technical"|"timeline"|"commercial"|"legal", "severity": "low"|"medium"|"high"|"critical", "description": string, "mitigation"?: string, "likelihood"?: number, "impact"?: number }>,',
     '  "citations"?: Array<{ "documentId": string, "page"?: number, "quote": string, "confidence"?: number }>',
     "}",
+    "",
     "Rules:",
     "- Output JSON only. Do NOT include commentary or code fences.",
     "- Use unix epoch milliseconds for every date/time value.",
     "- If information is unavailable, set the field to null or omit it; never invent facts.",
+    "",
+    "CRITICAL FOR documentsChecklist:",
+    "- Search the ENTIRE document for ANY mention of required documents, forms, certificates, or returnable schedules.",
+    "- Look for tables listing required documents (often numbered lists in 'Administrative Compliance' or 'Returnable Documents' sections).",
+    "- Extract EVERY required document EXACTLY as written in the tender document, word for word.",
+    "- DO NOT summarize or generalize (e.g., DO NOT say 'financial documents' if the tender says 'Tax Clearance Certificate').",
+    "- Use the EXACT terminology from the tender (e.g., 'COR 14', 'CV and ID of director', 'BBBEE Certificate', 'SARS Tax Clearance', 'CSD Report', 'CIPC Certificate').",
+    "- List EACH document as a separate item - do not combine multiple documents into one entry.",
+    "- Include the exact quote from the tender where each document is mentioned in the source.quote field.",
+    "- Include page numbers where you found each requirement.",
+    "",
+    "CRITICAL FOR requirements:",
+    "- Extract ALL eligibility requirements (registration, certifications, experience, etc.)",
+    "- Extract ALL technical requirements (specifications, qualifications, capacity)",
+    "- Extract ALL BEE/BBBEE requirements",
+    "- Extract ALL financial requirements (turnover, bank guarantees, etc.)",
   ].join("\n");
 }
 
@@ -522,11 +604,27 @@ function buildGeminiAnalysisPrompt(bundleName: string, documents: Array<{ filena
 
   return [
     `Bundle: ${bundleName}`,
-    "Documents:",
+    "",
+    "Documents to analyze:",
     docList,
-    "Analyze these tender documents and produce the structured JSON response described in the system instructions. Include requirements, risks, submission details, timelines, fees, evaluation criteria, and a concise summary. Highlight any missing information by leaving fields empty or null rather than guessing.",
+    "",
+    "IMPORTANT: Perform a COMPREHENSIVE analysis of the ENTIRE tender document(s). Do not stop after reading only a portion.",
+    "",
+    "Specifically, you MUST:",
+    "1. Search through ALL pages of the document (this tender may have 50+ pages)",
+    "2. Find and extract ALL required documents from 'Administrative Compliance' or similar sections",
+    "3. Look for numbered tables listing required documents/certificates (e.g., CSD Report, Tax Clearance, CIPC/CIPRO, BBBEE Certificate, SBD forms)",
+    "4. Extract technical specifications and requirements",
+    "5. Identify evaluation criteria and weightings",
+    "6. Note any site meetings, briefings, or mandatory attendances",
+    "7. Capture submission instructions and deadlines",
+    "",
+    "Produce the structured JSON response described in the system instructions.",
+    "Include requirements, risks, submission details, timelines, fees, evaluation criteria, and a concise summary.",
+    "Leave fields empty or null if information is not found - do not guess.",
+    "",
     `Today's date: ${new Date().toISOString().split("T")[0]}`,
-  ].join("\n\n");
+  ].join("\n");
 }
 
 function parseGeminiJson(text: string): any {

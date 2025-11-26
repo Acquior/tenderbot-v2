@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "convex/react";
-import { RefreshCw, X, Package } from "lucide-react";
+import { RefreshCw, X, Package, ArrowRight, CheckCircle2 } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import type { Doc } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,12 @@ export function DocumentRow({ document }: DocumentRowProps) {
   const bundle = useQuery(
     api.bundles.get,
     document.bundleId ? { id: document.bundleId } : "skip"
+  );
+
+  // Fetch opportunity linked to this bundle
+  const opportunity = useQuery(
+    api.opportunities.getByBundle,
+    document.bundleId ? { bundleId: document.bundleId } : "skip"
   );
 
   const {
@@ -141,6 +148,30 @@ export function DocumentRow({ document }: DocumentRowProps) {
           <span>No bundle detected</span>
         )}
       </div>
+
+      {/* Opportunity Link - shown when analysis is complete */}
+      {opportunity && (
+        <Link
+          href={`/app/opportunities/${opportunity._id}`}
+          className="flex items-center justify-between gap-3 p-3 mt-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 transition-colors group"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <div className="flex flex-col">
+              <span className="text-sm font-medium text-emerald-900 dark:text-emerald-100">
+                Analysis Complete
+              </span>
+              <span className="text-xs text-emerald-700 dark:text-emerald-300 truncate max-w-[300px]">
+                {opportunity.title}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 text-sm font-medium text-emerald-700 dark:text-emerald-300 group-hover:text-emerald-900 dark:group-hover:text-emerald-100">
+            View Opportunity
+            <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+          </div>
+        </Link>
+      )}
     </div>
   );
 }

@@ -139,6 +139,36 @@ export const updateMetadataInternal = internalMutation({
 });
 
 /**
+ * List documents by bundle with their download URLs
+ * Use this to display source tender documents on the opportunity detail page
+ */
+export const listByBundleWithUrls = query({
+  args: { bundleId: v.id("bundles") },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+
+    const documents = await ctx.db
+      .query("documents")
+      .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+      .order("desc")
+      .take(50);
+
+    // Get URLs for each document
+    const documentsWithUrls = await Promise.all(
+      documents.map(async (doc) => {
+        const url = await ctx.storage.getUrl(doc.storageId);
+        return {
+          ...doc,
+          url,
+        };
+      })
+    );
+
+    return documentsWithUrls;
+  },
+});
+
+/**
  * Internal query to get document by ID (for actions)
  */
 export const getInternal = internalQuery({

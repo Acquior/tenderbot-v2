@@ -202,6 +202,23 @@ export default defineSchema({
         strategicFit: v.optional(v.number()),
       })
     ),
+    // Manually edited documents checklist (overrides analysis.result.documentsChecklist when present)
+    editedDocumentsChecklist: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          mandatory: v.boolean(),
+          instructions: v.optional(v.string()),
+          source: v.optional(
+            v.object({
+              documentId: v.optional(v.string()),
+              page: v.optional(v.number()),
+              quote: v.optional(v.string()),
+            })
+          ),
+        })
+      )
+    ),
     createdBy: v.string(),
     organizationId: v.optional(v.string()),
     createdAt: v.number(),
@@ -225,9 +242,11 @@ export default defineSchema({
       v.literal("compliance"),
       v.literal("technical"),
       v.literal("commercial"),
+      v.literal("financial"),
       v.literal("legal"),
       v.literal("bee"),
       v.literal("eligibility"),
+      v.literal("administrative"),
       v.literal("other")
     ),
     description: v.string(),

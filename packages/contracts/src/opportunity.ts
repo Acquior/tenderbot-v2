@@ -20,33 +20,36 @@ export type OpportunityStatus = z.infer<typeof OpportunityStatus>;
  * Requirement extracted from tender documents
  */
 export const RequirementSchema = z.object({
-  id: z.string().optional(),
+  id: z.string().nullable().optional(),
   type: z.enum([
     "compliance",
     "technical",
     "commercial",
+    "financial", // Financial requirements (bonds, fees, insurance, etc.)
     "legal",
     "bee", // Black Economic Empowerment (South Africa)
     "eligibility",
+    "administrative",
     "other",
-  ]).optional().default("other"),
-  description: z.string().optional(),
-  text: z.string().optional(), // Alternative field name LLM might use
-  name: z.string().optional(), // Alternative field name LLM might use
-  mandatory: z.boolean().optional().default(false),
-  status: z.enum(["met", "partial", "unknown", "not_met"]).default("unknown"),
-  confidence: z.number().min(0).max(1).optional(),
+  ]).nullable().optional().default("other"),
+  description: z.string().nullable().optional(),
+  text: z.string().nullable().optional(), // Alternative field name LLM might use
+  name: z.string().nullable().optional(), // Alternative field name LLM might use
+  mandatory: z.boolean().nullable().optional().default(false),
+  status: z.enum(["met", "partial", "unknown", "not_met"]).nullable().optional().default("unknown"),
+  confidence: z.number().nullable().optional(),
   evidence: z
     .array(
       z.object({
-        documentId: z.string().optional(),
-        page: z.number().int().optional(),
-        quote: z.string().optional(),
+        documentId: z.string().nullable().optional(),
+        page: z.number().int().nullable().optional(),
+        quote: z.string().nullable().optional(),
       })
     )
+    .nullable()
     .optional(),
-  notes: z.string().optional(),
-  citation: z.any().optional(), // Allow citation field from LLM
+  notes: z.string().nullable().optional(),
+  citation: z.any().nullable().optional(), // Allow citation field from LLM
 }).transform((data, ctx) => ({
   id: data.id || `req-${ctx.path.join("-") || Math.random().toString(36).slice(2, 8)}`,
   type: data.type || "other",
@@ -64,7 +67,7 @@ export type Requirement = z.infer<typeof RequirementSchema>;
  * Risk assessment
  */
 export const RiskSchema = z.object({
-  id: z.string().optional(),
+  id: z.string().nullable().optional(),
   category: z.enum([
     "eligibility",
     "bee_compliance",
@@ -73,19 +76,19 @@ export const RiskSchema = z.object({
     "timeline",
     "commercial",
     "legal",
-  ]).optional().default("commercial"),
-  type: z.string().optional(), // Alternative field name LLM might use
-  severity: z.enum(["low", "medium", "high", "critical"]).optional().default("medium"),
-  description: z.string().optional(),
-  text: z.string().optional(), // Alternative field name LLM might use
-  name: z.string().optional(), // Alternative field name LLM might use
-  mitigation: z.string().optional(),
-  likelihood: z.number().min(0).max(1).optional(),
-  impact: z.number().min(0).max(1).optional(),
-  citation: z.any().optional(), // Allow citation field from LLM
+  ]).nullable().optional().default("commercial"),
+  type: z.string().nullable().optional(), // Alternative field name LLM might use
+  severity: z.enum(["low", "medium", "high", "critical"]).nullable().optional().default("medium"),
+  description: z.string().nullable().optional(),
+  text: z.string().nullable().optional(), // Alternative field name LLM might use
+  name: z.string().nullable().optional(), // Alternative field name LLM might use
+  mitigation: z.string().nullable().optional(),
+  likelihood: z.number().nullable().optional(),
+  impact: z.number().nullable().optional(),
+  citation: z.any().nullable().optional(), // Allow citation field from LLM
 }).transform((data, ctx) => ({
   id: data.id || `risk-${ctx.path.join("-") || Math.random().toString(36).slice(2, 8)}`,
-  category: data.category || (data.type as any) || "commercial",
+  category: data.category || (data.type as typeof data.category) || "commercial",
   severity: data.severity || "medium",
   description: data.description || data.text || data.name || "No description provided",
   mitigation: data.mitigation,

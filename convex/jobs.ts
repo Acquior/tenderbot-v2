@@ -44,6 +44,11 @@ const SHOULD_DETECT_CHARACTERISTICS = false;
 const USE_GEMINI_FILE_SEARCH = process.env.USE_GEMINI_FILE_SEARCH !== "false"; // Default to true
 const USE_GEMINI_FILE_SEARCH_ANALYSIS =
   process.env.USE_GEMINI_FILE_SEARCH_ANALYSIS !== "false";
+
+// Claude Sonnet 4.5 is the primary analysis engine (replaces legacy GPT-4.1)
+// Set USE_CLAUDE_FOR_ANALYSIS=false to fall back to legacy OpenAI analysis
+const USE_CLAUDE_FOR_ANALYSIS =
+  process.env.USE_CLAUDE_FOR_ANALYSIS !== "false";
 const TOTAL_STAGES = SHOULD_DETECT_CHARACTERISTICS
   ? USE_GEMINI_FILE_SEARCH
     ? 6
@@ -887,9 +892,40 @@ export const processBundleAnalysis = internalAction({
         throw new Error(`Not all documents in bundle are ready. Statuses: ${docStatuses}`);
       }
 
-      const extraction = USE_GEMINI_FILE_SEARCH_ANALYSIS
-        ? await runGeminiBundleExtraction(ctx, args, bundle, documents, updateProgress)
-        : await runLegacyBundleExtraction(ctx, args, bundle, documents, updateProgress);
+      // Determine which analysis engine to use
+      // Priority: Claude (primary) > Gemini File Search > Legacy OpenAI
+      const hasClaudeConfig = Boolean(
+        process.env.AZURE_CLAUDE_ENDPOINT && process.env.AZURE_CLAUDE_API_KEY
+      );
+      const useClaudeAnalysis = USE_CLAUDE_FOR_ANALYSIS && hasClaudeConfig;
+
+      let useGeminiAnalysis = false;
+      if (!useClaudeAnalysis && USE_GEMINI_FILE_SEARCH_ANALYSIS) {
+        // Fall back to Gemini if Claude is not configured
+        const allGeminiReady = documents.every((doc: any) => doc.geminiStatus === "ready");
+        const geminiStatuses = documents.map((d: any) => `${d.filename}: ${d.geminiStatus || "not_uploaded"}`).join(", ");
+        console.log(`[Bundle Analysis Job] Gemini statuses: ${geminiStatuses}`);
+
+        if (!allGeminiReady) {
+          const hasErrors = documents.some((doc: any) => doc.geminiStatus === "error");
+          if (hasErrors) {
+            console.warn(`[Bundle Analysis Job] Some documents failed Gemini upload. Falling back to legacy analysis.`);
+            useGeminiAnalysis = false;
+          } else {
+            throw new Error(`Not all documents are indexed in Gemini. Statuses: ${geminiStatuses}. Please wait for indexing to complete.`);
+          }
+        } else {
+          useGeminiAnalysis = true;
+        }
+      }
+
+      console.log(`[Bundle Analysis Job] Analysis engine: ${useClaudeAnalysis ? 'Claude Sonnet 4.5' : useGeminiAnalysis ? 'Gemini File Search' : 'Legacy OpenAI'}`);
+
+      const extraction = useClaudeAnalysis
+        ? await runClaudeBundleExtraction(ctx, args, bundle, documents, updateProgress)
+        : useGeminiAnalysis
+          ? await runGeminiBundleExtraction(ctx, args, bundle, documents, updateProgress)
+          : await runLegacyBundleExtraction(ctx, args, bundle, documents, updateProgress);
 
       const data = extraction.data;
       const metadata = extraction.metadata;
@@ -941,6 +977,14 @@ export const processBundleAnalysis = internalAction({
         ...analysisMetadataExtras,
       };
 
+      // Normalize documentsChecklist for both paths
+      const documentsChecklist = geminiTenderAnalysis?.documentsChecklist
+        ?? (data.requiredDocuments ?? []).map((doc: { name: string; mandatory?: boolean; notes?: string }) => ({
+            name: doc.name,
+            mandatory: doc.mandatory ?? true,
+            instructions: doc.notes,
+          }));
+
       const analysisResultPayload = geminiTenderAnalysis
         ? {
             ...geminiTenderAnalysis,
@@ -949,6 +993,7 @@ export const processBundleAnalysis = internalAction({
           }
         : {
             ...data,
+            documentsChecklist, // Ensure documentsChecklist is always present
             summary: analysisSummary,
             _metadata: metadataEnvelope,
           };
@@ -1046,6 +1091,149 @@ type BundleExtractionResult = {
   geminiTenderAnalysis?: any;
 };
 
+/**
+ * Claude Sonnet 4.5 bundle extraction - PRIMARY analysis engine
+ *
+ * Features:
+ * - Structured outputs with guaranteed JSON schema compliance
+ * - Extended thinking for complex multi-document analysis
+ * - Optimized prompts for comprehensive tender extraction
+ */
+async function runClaudeBundleExtraction(
+  ctx: any,
+  args: { bundleId: any },
+  bundle: any,
+  documents: any[],
+  updateProgress: (stageNumber: number, message: string) => Promise<void>
+): Promise<BundleExtractionResult> {
+  await updateProgress(2, "Collecting document context for Claude analysis");
+
+  // Claude has 200K context - collect ALL content without truncation
+  const MAX_TOTAL_CHARS = 400000; // ~100K tokens, well within Claude's limit
+
+  const contextChunks: Array<{ text: string; documentId: string; sequence: number }> = [];
+  let totalChars = 0;
+
+  for (const doc of documents) {
+    const chunks = await ctx.runQuery(internal.chunks.listByDocumentInternalLightweight, {
+      documentId: doc._id,
+      limit: 100000, // Get all chunks
+    });
+
+    for (const chunk of chunks) {
+      if (totalChars + chunk.text.length > MAX_TOTAL_CHARS) break;
+      contextChunks.push({
+        text: chunk.text,
+        documentId: doc._id,
+        sequence: chunk.sequence,
+      });
+      totalChars += chunk.text.length;
+    }
+    if (totalChars >= MAX_TOTAL_CHARS) break;
+  }
+
+  if (contextChunks.length === 0) {
+    throw new Error("No chunks found in bundle documents");
+  }
+
+  // Format context with document headers for better source tracking
+  const docIdToName = new Map(documents.map((d: any) => [d._id.toString(), d.filename]));
+  let currentDocId = "";
+  const formattedChunks: string[] = [];
+
+  for (const chunk of contextChunks) {
+    if (chunk.documentId.toString() !== currentDocId) {
+      currentDocId = chunk.documentId.toString();
+      const docName = docIdToName.get(currentDocId) || "Unknown Document";
+      formattedChunks.push(`\n=== DOCUMENT: ${docName} ===\n`);
+    }
+    formattedChunks.push(chunk.text);
+  }
+
+  const contextText = formattedChunks.join("\n\n");
+  const totalPages = documents.reduce((sum: number, d: any) => sum + (d.metadata?.pageCount || 0), 0);
+
+  console.log(
+    `[Claude Analysis] Collected ${contextChunks.length} chunks (${totalChars} chars) from ${documents.length} docs, ${totalPages} pages`
+  );
+
+  await updateProgress(3, "Analyzing with Claude Sonnet 4.5");
+
+  // Check if Claude is configured
+  const hasClaudeConfig = Boolean(
+    process.env.AZURE_CLAUDE_ENDPOINT && process.env.AZURE_CLAUDE_API_KEY
+  );
+
+  if (!hasClaudeConfig) {
+    throw new Error(
+      "Claude not configured. Set AZURE_CLAUDE_ENDPOINT and AZURE_CLAUDE_API_KEY environment variables."
+    );
+  }
+
+  const {
+    ClaudeClient,
+    getClaudeConfig,
+    buildClaudeTenderAnalysisPrompt,
+    CLAUDE_TENDER_SYSTEM_PROMPT,
+  } = await import("@tenderbot/llm");
+  const { TenderAnalysisSchema } = await import("@tenderbot/contracts");
+
+  const claudeClient = new ClaudeClient(getClaudeConfig());
+
+  const prompt = buildClaudeTenderAnalysisPrompt(
+    bundle.name,
+    documents.map((d: any) => ({
+      filename: d.filename,
+      pageCount: d.metadata?.pageCount,
+    })),
+    contextText
+  );
+
+  // Determine if we should use extended thinking
+  const useExtendedThinking = claudeClient.shouldUseExtendedThinking(documents.length, totalPages);
+
+  console.log(
+    `[Claude Analysis] Starting analysis. Extended thinking: ${useExtendedThinking}`
+  );
+
+  const startTime = Date.now();
+
+  const result = await claudeClient.analyze(
+    prompt,
+    TenderAnalysisSchema,
+    documents.length,
+    totalPages,
+    {
+      systemPrompt: CLAUDE_TENDER_SYSTEM_PROMPT,
+      maxTokens: 16384,
+    }
+  );
+
+  const latencyMs = Date.now() - startTime;
+
+  console.log(
+    `[Claude Analysis] Complete. Tokens: ${result.usage.totalTokens}, Latency: ${latencyMs}ms`
+  );
+
+  return {
+    data: result.data,
+    metadata: {
+      model: result.model,
+      tokensIn: result.usage.inputTokens,
+      tokensOut: result.usage.outputTokens,
+      cost: undefined, // Claude via Azure doesn't have direct cost tracking
+      latencyMs,
+    },
+    contextChunks,
+    contextText,
+    analysisMetadataExtras: {
+      source: "claude_sonnet_4_5",
+      extendedThinkingUsed: useExtendedThinking,
+      thinkingContent: result.thinkingContent,
+    },
+  };
+}
+
 async function runLegacyBundleExtraction(
   ctx: any,
   args: { bundleId: any },
@@ -1055,9 +1243,12 @@ async function runLegacyBundleExtraction(
 ): Promise<BundleExtractionResult> {
   await updateProgress(2, "Collecting document context");
 
-  const useFullContext = process.env.LLM_FULL_CONTEXT === "true";
-  const MAX_CHUNKS_PER_DOC = useFullContext ? 100000 : 20;
-  const MAX_TOTAL_CHARS = useFullContext ? Number.POSITIVE_INFINITY : 100000;
+  // Default to FULL context - modern LLMs (GPT-4.1, etc.) can handle 128K+ tokens
+  // A 50-page tender is typically only ~20K tokens, so there's no need to truncate
+  // Set LLM_FULL_CONTEXT=false only if you specifically need to limit context
+  const limitContext = process.env.LLM_FULL_CONTEXT === "false";
+  const MAX_CHUNKS_PER_DOC = limitContext ? 50 : 100000;
+  const MAX_TOTAL_CHARS = limitContext ? 150000 : Number.POSITIVE_INFINITY;
 
   const contextChunks: Array<{ text: string; documentId: string; sequence: number }> = [];
   let totalChars = 0;
@@ -1092,7 +1283,7 @@ async function runLegacyBundleExtraction(
 
   const contextText = contextChunks.map((c) => c.text).join("\n\n");
   console.log(
-    `[Bundle Analysis Job] Collected ${contextChunks.length} chunks (${totalChars} chars). FullContext=${useFullContext}`
+    `[Bundle Analysis Job] Collected ${contextChunks.length} chunks (${totalChars} chars). FullContext=${!limitContext}`
   );
 
   await updateProgress(3, "Extracting opportunity data with LLM");
@@ -1208,7 +1399,15 @@ async function runLegacyBundleExtraction(
 
   const prompt = PROMPTS.extractDocument(
     contextText,
-    "Extract tender opportunity information including title, issuer, reference number, due date, description, requirements array, risks array, scoring, a concise summary, and an explicit list of required submission documents."
+    `Extract ALL tender opportunity information comprehensively:
+
+1. BASIC INFO: title, issuer, reference number, due date, description
+2. REQUIRED DOCUMENTS (CRITICAL): Extract EVERY document mentioned in 'Administrative Compliance', 'Returnable Documents', or similar sections. Use EXACT names as written (e.g., "CSD Report", "SARS Tax Clearance Certificate", "CIPC/CIPRO Certificate", "B-BBEE Status Level Verification Certificate", "SBD 1", "SBD 3.1", "SBD 4", "SBD 6.1", "Letter of Appointment", "Board Resolution", "CV and ID of director"). Do NOT summarize - list each document separately.
+3. REQUIREMENTS: All eligibility, technical, BEE, financial, and compliance requirements
+4. RISKS: Potential disqualification risks, timeline risks, capacity risks
+5. SUMMARY: Concise overview of the tender scope and key points
+
+Search the ENTIRE document including all tables and annexures.`
   );
 
   const extraction = await client.generate({

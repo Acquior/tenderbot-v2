@@ -72,10 +72,10 @@ Your task is to extract structured information from tender document bundles and 
   "summary": "string - max 1200 chars summarizing the tender",
   "documentsChecklist": [
     {
-      "name": "string - document name",
+      "name": "string - EXACT document name as written in the tender (e.g., 'Tax Clearance Certificate', 'COR 14', 'CV and ID of director')",
       "mandatory": boolean,
-      "instructions": "optional string",
-      "source": { "documentId": "string", "page": number, "quote": "string" }
+      "instructions": "optional string - any specific instructions for this document",
+      "source": { "documentId": "string", "page": number, "quote": "string - the exact quote from the tender mentioning this document" }
     }
   ],
   "requirements": [
@@ -110,6 +110,14 @@ Guidelines:
 5. Be thorough - extract all requirements, risks, and checklist items mentioned
 6. Generate unique IDs for requirements (req-1, req-2, etc.) and risks (risk-1, risk-2, etc.)
 7. Return ONLY valid JSON matching the structure above - no prose, explanations, or text outside the JSON
+
+CRITICAL FOR documentsChecklist:
+- Extract EVERY required document EXACTLY as written in the tender document, word for word
+- DO NOT summarize or generalize document names (e.g., DO NOT say "financial documents" if the tender says "Tax Clearance Certificate")
+- Use the EXACT terminology from the tender (e.g., "COR 14", "CV and ID of director", "BBBEE Certificate", "Proof of banking details")
+- List EACH document as a separate item - do not combine multiple documents into one entry
+- Include the exact quote from the tender where each document is mentioned in the source field
+- If the tender has a numbered list of required documents, preserve that exact wording for each item
 
 Focus on accuracy, completeness, and proper structure.`;
 

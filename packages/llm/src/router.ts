@@ -68,6 +68,19 @@ export const DEFAULT_MODELS: Record<LLMProvider, Record<string, ModelConfig>> = 
       temperature: 0.3,
     },
   },
+  claude: {
+    standard: {
+      provider: "claude",
+      model: "claude-sonnet-4-5-20250514",
+      temperature: 0.1,
+      maxTokens: 8192,
+    },
+    reasoning: {
+      provider: "claude",
+      model: "claude-sonnet-4-5-20250514",
+      temperature: 1.0, // Required for extended thinking
+    },
+  },
 };
 
 /**
@@ -123,6 +136,7 @@ export class ModelRouter {
       deepseek: { prompt: 0.27, completion: 1.1 }, // DeepSeek-V3 pricing
       xai: { prompt: 10.0, completion: 30.0 }, // Grok pricing (estimated)
       cohere: { prompt: 3.0, completion: 15.0 }, // Command-R+ pricing
+      claude: { prompt: 3.0, completion: 15.0 }, // Claude Sonnet 4.5 pricing (via Azure)
     };
 
     const costs = costTable[provider];

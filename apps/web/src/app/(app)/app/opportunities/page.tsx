@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useMutation, useQuery } from "convex/react";
-import { Plus, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Plus, FileText, AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -238,40 +238,69 @@ export default function OpportunitiesPage() {
                     <th className="py-2 font-medium">Title</th>
                     <th className="py-2 font-medium">Issuer</th>
                     <th className="py-2 font-medium">Status</th>
+                    <th className="py-2 font-medium">Risks</th>
                     <th className="py-2 font-medium">Due Date</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
-                  {opportunities.map((opportunity) => (
-                    <tr key={opportunity._id}>
-                      <td className="py-3 font-medium text-foreground">
-                        <Link
-                          href={`/app/opportunities/${opportunity._id}`}
-                          className="hover:underline"
-                          aria-label={`View opportunity ${opportunity.title}`}
-                        >
-                          {opportunity.title}
-                        </Link>
-                      </td>
-                      <td className="py-3 text-muted-foreground">{opportunity.issuer}</td>
-                      <td className="py-3">
-                        <Badge
-                          variant={
-                            opportunity.status === "approved"
-                              ? "default"
-                              : opportunity.status === "in_review"
-                                ? "secondary"
-                                : "outline"
-                          }
-                        >
-                          {opportunity.status.replaceAll("_", " ")}
-                        </Badge>
-                      </td>
-                      <td className="py-3 text-muted-foreground">
-                        {new Date(opportunity.dueDate).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
+                  {opportunities.map((opportunity) => {
+                    // Calculate risk indicators
+                    const risks = opportunity.risks ?? [];
+                    const criticalCount = risks.filter((r) => r.severity === "critical").length;
+                    const highCount = risks.filter((r) => r.severity === "high").length;
+                    const hasBlockers = criticalCount > 0 || highCount > 0;
+
+                    return (
+                      <tr key={opportunity._id}>
+                        <td className="py-3 font-medium text-foreground">
+                          <Link
+                            href={`/app/opportunities/${opportunity._id}`}
+                            className="hover:underline"
+                            aria-label={`View opportunity ${opportunity.title}`}
+                          >
+                            {opportunity.title}
+                          </Link>
+                        </td>
+                        <td className="py-3 text-muted-foreground">{opportunity.issuer}</td>
+                        <td className="py-3">
+                          <Badge
+                            variant={
+                              opportunity.status === "approved"
+                                ? "default"
+                                : opportunity.status === "in_review"
+                                  ? "secondary"
+                                  : "outline"
+                            }
+                          >
+                            {opportunity.status.replaceAll("_", " ")}
+                          </Badge>
+                        </td>
+                        <td className="py-3">
+                          {hasBlockers ? (
+                            <div className="flex items-center gap-1">
+                              <AlertTriangle className="h-4 w-4 text-orange-500" />
+                              <span className="text-xs text-muted-foreground">
+                                {criticalCount > 0 && (
+                                  <span className="text-red-600">{criticalCount} critical</span>
+                                )}
+                                {criticalCount > 0 && highCount > 0 && ", "}
+                                {highCount > 0 && (
+                                  <span className="text-orange-600">{highCount} high</span>
+                                )}
+                              </span>
+                            </div>
+                          ) : risks.length > 0 ? (
+                            <span className="text-xs text-muted-foreground">{risks.length} low/med</span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="py-3 text-muted-foreground">
+                          {new Date(opportunity.dueDate).toLocaleDateString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
