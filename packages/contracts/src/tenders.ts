@@ -22,6 +22,7 @@ export const DocumentCategorySchema = z.enum([
   "administrative",
   "technical",
   "financial",
+  "commercial",
   "legal",
   "bee",
   "sbd_form",
