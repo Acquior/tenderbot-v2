@@ -2,6 +2,34 @@ import { z } from "zod";
 import { RequirementSchema, RiskSchema } from "./opportunity";
 
 /**
+ * Helper to coerce timestamp values to milliseconds
+ * Handles: Unix seconds, Unix milliseconds, and date strings
+ */
+function coerceToMilliseconds(val: number | string | null | undefined): number | undefined {
+  if (val === undefined || val === null) return undefined;
+
+  if (typeof val === "number") {
+    // Already in milliseconds (timestamp after year 2001 in ms)
+    if (val > 1_000_000_000_000) return val;
+    // Unix seconds (timestamp after 2001 in seconds) - convert to milliseconds
+    if (val > 1_000_000_000) return val * 1000;
+    // Small number - likely invalid, return as-is
+    return val;
+  }
+
+  // String value - try to parse
+  const numeric = Number(val);
+  if (!Number.isNaN(numeric)) {
+    // Numeric string - recursively handle
+    return coerceToMilliseconds(numeric);
+  }
+
+  // Try parsing as date string (ISO 8601, etc.)
+  const parsed = Date.parse(val);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
  * Evidence/citation for claims extracted from tender documents
  */
 export const EvidenceSchema = z
@@ -191,32 +219,12 @@ export const TenderAnalysisSchema = z
 
     timelines: z
       .object({
-        dueDate: z.union([z.number(), z.string()]).nullable().optional().transform((val) => {
-          if (val === undefined || val === null) return undefined;
-          if (typeof val === "number") return val;
-          const num = Date.parse(val);
-          return Number.isNaN(num) ? parseInt(val, 10) : num;
-        }),
-        publishedDate: z.union([z.number(), z.string()]).nullable().optional().transform((val) => {
-          if (val === undefined || val === null) return undefined;
-          if (typeof val === "number") return val;
-          const num = Date.parse(val);
-          return Number.isNaN(num) ? parseInt(val, 10) : num;
-        }),
-        questionsDue: z.union([z.number(), z.string()]).nullable().optional().transform((val) => {
-          if (val === undefined || val === null) return undefined;
-          if (typeof val === "number") return val;
-          const num = Date.parse(val);
-          return Number.isNaN(num) ? parseInt(val, 10) : num;
-        }),
+        dueDate: z.union([z.number(), z.string()]).nullable().optional().transform(coerceToMilliseconds),
+        publishedDate: z.union([z.number(), z.string()]).nullable().optional().transform(coerceToMilliseconds),
+        questionsDue: z.union([z.number(), z.string()]).nullable().optional().transform(coerceToMilliseconds),
         siteMeeting: z
           .object({
-            date: z.union([z.number(), z.string()]).nullable().optional().transform((val) => {
-              if (val === undefined || val === null) return undefined;
-              if (typeof val === "number") return val;
-              const num = Date.parse(val);
-              return Number.isNaN(num) ? parseInt(val, 10) : num;
-            }),
+            date: z.union([z.number(), z.string()]).nullable().optional().transform(coerceToMilliseconds),
             time: z.string().nullable().optional().transform((val) => val ?? undefined),
             address: z.string().nullable().optional().transform((val) => val ?? undefined),
             mandatory: z.boolean().nullable().optional().transform((val) => val ?? undefined),
@@ -330,15 +338,13 @@ export const TenderAnalysisSchema = z
       contactInformation: data.opportunity?.contactInformation || data.contactInformation,
     };
 
-    // Handle dueDate conversion
+    // Handle dueDate conversion - use coerceToMilliseconds for all fallback sources
     let dueDate = data.timelines?.dueDate;
     if (!dueDate && data.dueDate) {
-      dueDate = typeof data.dueDate === "string" ? new Date(data.dueDate).getTime() : data.dueDate;
+      dueDate = coerceToMilliseconds(data.dueDate);
     }
     if (!dueDate && data.keyDates?.closingDate) {
-      dueDate = typeof data.keyDates.closingDate === "string"
-        ? new Date(data.keyDates.closingDate).getTime()
-        : data.keyDates.closingDate;
+      dueDate = coerceToMilliseconds(data.keyDates.closingDate);
     }
 
     const timelines = {

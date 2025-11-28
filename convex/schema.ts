@@ -179,7 +179,8 @@ export default defineSchema({
             v.literal("technical"),
             v.literal("timeline"),
             v.literal("commercial"),
-            v.literal("legal")
+            v.literal("legal"),
+            v.literal("administrative")
           ),
           severity: v.union(
             v.literal("low"),

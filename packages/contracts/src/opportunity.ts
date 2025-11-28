@@ -76,6 +76,7 @@ export const RiskSchema = z.object({
     "timeline",
     "commercial",
     "legal",
+    "administrative",
   ]).nullable().optional().default("commercial"),
   type: z.string().nullable().optional(), // Alternative field name LLM might use
   severity: z.enum(["low", "medium", "high", "critical"]).nullable().optional().default("medium"),

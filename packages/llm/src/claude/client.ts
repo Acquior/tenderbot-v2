@@ -124,17 +124,40 @@ Rules:
 1. Output ONLY the JSON object - no markdown code blocks, no explanations, no additional text
 2. Ensure all required fields are present
 3. Use null for optional fields if data is not found
-4. All dates must be Unix epoch milliseconds (numbers)
-5. Do not invent or hallucinate information - if not found in the documents, use null`;
+4. All dates must be ISO 8601 strings (e.g., "2025-12-03T11:00:00" or "2025-12-03"). Do NOT use Unix timestamps - use ISO date strings only.
+5. Do not invent or hallucinate information - if not found in the documents, use null
+6. Pay careful attention to the YEAR in dates - verify it matches what is written in the document`;
 
-    const response = await this.callAnthropicAPI(
-      enhancedSystemPrompt,
-      prompt,
-      {
-        maxTokens: options.maxTokens || 16384,
-        temperature: options.temperature ?? 0.1,
+    // Try non-streaming first, fall back to streaming on 408 timeout (Azure gateway limit)
+    let response: AnthropicResponse;
+    try {
+      response = await this.callAnthropicAPI(
+        enhancedSystemPrompt,
+        prompt,
+        {
+          maxTokens: options.maxTokens || 16384,
+          temperature: options.temperature ?? 0.1,
+        }
+      );
+    } catch (error) {
+      // Check if it's a timeout error (408) - if so, try streaming
+      const isTimeoutError = error instanceof Error &&
+        (error.message.includes('408') || error.message.includes('timeout') || error.message.includes('Timeout'));
+
+      if (isTimeoutError) {
+        console.log(`[ClaudeClient] Non-streaming timed out, falling back to streaming...`);
+        response = await this.callAnthropicAPIStreaming(
+          enhancedSystemPrompt,
+          prompt,
+          {
+            maxTokens: options.maxTokens || 16384,
+            temperature: options.temperature ?? 0.1,
+          }
+        );
+      } else {
+        throw error;
       }
-    );
+    }
 
     // Use safe JSON parsing with repair for LLM outputs
     const content = response.content[0]?.text || "";
@@ -190,9 +213,10 @@ Rules:
 1. Output ONLY the JSON object - no markdown code blocks, no explanations
 2. Ensure all required fields are present
 3. Use null for optional fields if data is not found
-4. All dates must be Unix epoch milliseconds (numbers)
+4. All dates must be ISO 8601 strings (e.g., "2025-12-03T11:00:00" or "2025-12-03"). Do NOT use Unix timestamps - use ISO date strings only.
 5. Do not invent information - use null if not found
-6. Include page numbers and exact quotes in citations where possible`;
+6. Include page numbers and exact quotes in citations where possible
+7. Pay careful attention to the YEAR in dates - verify it matches what is written in the document`;
 
     // Try non-streaming first (simpler, works better in serverless environments like Convex)
     // Fall back to streaming only if we get a 408 timeout error

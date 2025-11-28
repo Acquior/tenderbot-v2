@@ -162,10 +162,35 @@ export function safeString(value: unknown, defaultValue: string): string {
 
 /**
  * Normalize a timestamp, returning undefined if invalid
+ * Handles Unix seconds, Unix milliseconds, and date strings
  */
 export function normalizeTimestamp(value: unknown): number | undefined {
   if (typeof value === "number" && !Number.isNaN(value) && Number.isFinite(value)) {
+    // Already in milliseconds (timestamp after year 2001 in ms)
+    if (value > 1_000_000_000_000) {
+      return value;
+    }
+    // Unix seconds (timestamp after 2001 in seconds) - convert to milliseconds
+    if (value > 1_000_000_000) {
+      return value * 1000;
+    }
+    // Small number - likely invalid but return as-is
     return value;
   }
+
+  // Handle string timestamps
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (!Number.isNaN(numeric)) {
+      // Numeric string - recurse to handle seconds vs milliseconds
+      return normalizeTimestamp(numeric);
+    }
+    // Try parsing as date string (ISO 8601, etc.)
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+
   return undefined;
 }
