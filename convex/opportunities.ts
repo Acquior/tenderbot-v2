@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { requireUser } from "./auth";
 
 /**
@@ -64,6 +64,13 @@ export const getByBundle = query({
       .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
       .first();
     return opportunity;
+  },
+});
+
+export const getInternal = internalQuery({
+  args: { opportunityId: v.id("opportunities") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.opportunityId);
   },
 });
 
@@ -173,6 +180,7 @@ export const createFromAnalysis = internalMutation({
   },
   handler: async (ctx, args) => {
     const analysis = args.analysis;
+    const requirements = Array.isArray(analysis.requirements) ? analysis.requirements : [];
 
     // Ensure idempotency: reuse existing opportunity for this bundle if present
     const existingOpportunity = (
@@ -232,15 +240,35 @@ export const createFromAnalysis = internalMutation({
     }
 
     // Insert requirements from analysis
-    for (const req of analysis.requirements) {
+    for (const req of requirements) {
+      const normalizedEvidence = Array.isArray(req.evidence)
+        ? req.evidence
+            .filter((item: any) => item && typeof item === "object")
+            .map((item: any) => ({
+              documentId: item.documentId,
+              page: typeof item.page === "number" ? item.page : undefined,
+              quote: typeof item.quote === "string" ? item.quote : undefined,
+              section: typeof item.section === "string" ? item.section : undefined,
+              confidence: typeof item.confidence === "number" ? item.confidence : undefined,
+            }))
+        : undefined;
+
       await ctx.db.insert("requirements", {
         opportunityId,
         sourceAnalysisId: args.analysisId,
         type: req.type,
         description: req.description,
+        normalizedName:
+          typeof req.normalizedName === "string" ? req.normalizedName : undefined,
+        documentCategoryNeeded:
+          typeof req.documentCategoryNeeded === "string" ? req.documentCategoryNeeded : undefined,
+        dueStage: typeof req.dueStage === "string" ? req.dueStage : undefined,
+        formFillNeeded: typeof req.formFillNeeded === "boolean" ? req.formFillNeeded : undefined,
+        reviewStatus: typeof req.reviewStatus === "string" ? req.reviewStatus : "draft",
         mandatory: req.mandatory,
         status: req.status,
         confidence: req.confidence,
+        evidence: normalizedEvidence,
         notes: req.notes,
         createdAt: Date.now(),
       });

@@ -10,6 +10,17 @@ export const list = query({
   args: {
     limit: v.optional(v.number()),
     bundleId: v.optional(v.id("bundles")),
+    kind: v.optional(
+      v.union(
+        v.literal("tender_source"),
+        v.literal("company_reference"),
+        v.literal("workspace_artifact"),
+        v.literal("generated_export"),
+        v.literal("form_template")
+      )
+    ),
+    profileId: v.optional(v.id("companyProfiles")),
+    workspaceId: v.optional(v.id("tenderWorkspaces")),
   },
   handler: async (ctx, args) => {
     const identity = await getOptionalUser(ctx);
@@ -19,18 +30,20 @@ export const list = query({
     }
 
     const documentsQuery = args.bundleId
-      ? ctx.db
-          .query("documents")
-          .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
-      : ctx.db
-          .query("documents")
-          .withIndex("by_created_at");
+      ? ctx.db.query("documents").withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
+      : args.profileId
+        ? ctx.db.query("documents").withIndex("by_profile", (q) => q.eq("profileId", args.profileId))
+        : args.workspaceId
+          ? ctx.db.query("documents").withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+          : args.kind
+            ? ctx.db.query("documents").withIndex("by_kind", (q) => q.eq("kind", args.kind))
+            : ctx.db.query("documents").withIndex("by_created_at");
 
-    const documents = await documentsQuery
-      .order("desc")
-      .take(args.limit ?? 50);
+    const documents = await documentsQuery.order("desc").take(args.limit ?? 50);
 
-    return documents;
+    const effectiveKind = args.kind ?? "tender_source";
+
+    return documents.filter((document) => (document.kind ?? "tender_source") === effectiveKind);
   },
 });
 
@@ -57,6 +70,28 @@ export const create = mutation({
     size: v.number(),
     storageId: v.string(),
     bundleId: v.optional(v.id("bundles")),
+    kind: v.optional(
+      v.union(
+        v.literal("tender_source"),
+        v.literal("company_reference"),
+        v.literal("workspace_artifact"),
+        v.literal("generated_export"),
+        v.literal("form_template")
+      )
+    ),
+    profileId: v.optional(v.id("companyProfiles")),
+    workspaceId: v.optional(v.id("tenderWorkspaces")),
+    documentCategory: v.optional(v.string()),
+    approvalStatus: v.optional(
+      v.union(
+        v.literal("draft"),
+        v.literal("approved"),
+        v.literal("expired"),
+        v.literal("rejected")
+      )
+    ),
+    expiresAt: v.optional(v.number()),
+    sourceDocumentId: v.optional(v.id("documents")),
   },
   handler: async (ctx, args) => {
     const identity = await requireUser(ctx);
@@ -67,8 +102,15 @@ export const create = mutation({
       size: args.size,
       storageId: args.storageId,
       status: "uploaded",
+      kind: args.kind ?? "tender_source",
       checksums: {},
       bundleId: args.bundleId,
+      profileId: args.profileId,
+      workspaceId: args.workspaceId,
+      documentCategory: args.documentCategory,
+      approvalStatus: args.approvalStatus,
+      expiresAt: args.expiresAt,
+      sourceDocumentId: args.sourceDocumentId,
       createdBy: identity.clerkUserId,
       createdAt: Date.now(),
     });
@@ -133,6 +175,55 @@ export const updateMetadataInternal = internalMutation({
         ...document.metadata,
         ...args.metadata,
       },
+      kind: document.kind ?? "tender_source",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const updateDetailsInternal = internalMutation({
+  args: {
+    documentId: v.id("documents"),
+    kind: v.optional(
+      v.union(
+        v.literal("tender_source"),
+        v.literal("company_reference"),
+        v.literal("workspace_artifact"),
+        v.literal("generated_export"),
+        v.literal("form_template")
+      )
+    ),
+    profileId: v.optional(v.id("companyProfiles")),
+    workspaceId: v.optional(v.id("tenderWorkspaces")),
+    documentCategory: v.optional(v.string()),
+    approvalStatus: v.optional(
+      v.union(
+        v.literal("draft"),
+        v.literal("approved"),
+        v.literal("expired"),
+        v.literal("rejected")
+      )
+    ),
+    expiresAt: v.optional(v.number()),
+    sourceDocumentId: v.optional(v.id("documents")),
+  },
+  handler: async (ctx, args) => {
+    const document = await ctx.db.get(args.documentId);
+    if (!document) {
+      throw new Error("Document not found");
+    }
+
+    await ctx.db.patch(args.documentId, {
+      kind: args.kind ?? document.kind ?? "tender_source",
+      profileId: typeof args.profileId === "undefined" ? document.profileId : args.profileId,
+      workspaceId: typeof args.workspaceId === "undefined" ? document.workspaceId : args.workspaceId,
+      documentCategory:
+        typeof args.documentCategory === "undefined" ? document.documentCategory : args.documentCategory,
+      approvalStatus:
+        typeof args.approvalStatus === "undefined" ? document.approvalStatus : args.approvalStatus,
+      expiresAt: typeof args.expiresAt === "undefined" ? document.expiresAt : args.expiresAt,
+      sourceDocumentId:
+        typeof args.sourceDocumentId === "undefined" ? document.sourceDocumentId : args.sourceDocumentId,
       updatedAt: Date.now(),
     });
   },
@@ -155,13 +246,15 @@ export const listByBundleWithUrls = query({
 
     // Get URLs for each document
     const documentsWithUrls = await Promise.all(
-      documents.map(async (doc) => {
+      documents
+        .filter((doc) => (doc.kind ?? "tender_source") === "tender_source")
+        .map(async (doc) => {
         const url = await ctx.storage.getUrl(doc.storageId);
         return {
           ...doc,
           url,
         };
-      })
+        })
     );
 
     return documentsWithUrls;
@@ -178,6 +271,58 @@ export const getInternal = internalQuery({
   },
 });
 
+export const createGeneratedInternal = internalMutation({
+  args: {
+    filename: v.string(),
+    mimeType: v.string(),
+    size: v.number(),
+    storageId: v.string(),
+    kind: v.union(
+      v.literal("company_reference"),
+      v.literal("workspace_artifact"),
+      v.literal("generated_export"),
+      v.literal("form_template"),
+      v.literal("tender_source")
+    ),
+    createdBy: v.string(),
+    bundleId: v.optional(v.id("bundles")),
+    profileId: v.optional(v.id("companyProfiles")),
+    workspaceId: v.optional(v.id("tenderWorkspaces")),
+    documentCategory: v.optional(v.string()),
+    approvalStatus: v.optional(
+      v.union(
+        v.literal("draft"),
+        v.literal("approved"),
+        v.literal("expired"),
+        v.literal("rejected")
+      )
+    ),
+    expiresAt: v.optional(v.number()),
+    sourceDocumentId: v.optional(v.id("documents")),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("documents", {
+      filename: args.filename,
+      mimeType: args.mimeType,
+      size: args.size,
+      storageId: args.storageId,
+      status: "ready",
+      kind: args.kind,
+      checksums: {},
+      bundleId: args.bundleId,
+      profileId: args.profileId,
+      workspaceId: args.workspaceId,
+      documentCategory: args.documentCategory,
+      approvalStatus: args.approvalStatus,
+      expiresAt: args.expiresAt,
+      sourceDocumentId: args.sourceDocumentId,
+      createdBy: args.createdBy,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 /**
  * Internal query to list documents by bundle (for actions)
  */
@@ -185,10 +330,66 @@ export const listByBundle = internalQuery({
   args: { bundleId: v.id("bundles") },
   handler: async (ctx, args) => {
     // OPTIMIZED: Added limit to prevent unbounded data transfer
-    return await ctx.db
+    const documents = await ctx.db
       .query("documents")
       .withIndex("by_bundle", (q) => q.eq("bundleId", args.bundleId))
       .take(100);
+    return documents.filter((document) => (document.kind ?? "tender_source") === "tender_source");
+  },
+});
+
+export const listByProfileWithUrls = query({
+  args: {
+    profileId: v.id("companyProfiles"),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const documents = await ctx.db
+      .query("documents")
+      .withIndex("by_profile", (q) => q.eq("profileId", args.profileId))
+      .order("desc")
+      .take(100);
+
+    return Promise.all(
+      documents.map(async (document) => ({
+        ...document,
+        url: await ctx.storage.getUrl(document.storageId),
+      }))
+    );
+  },
+});
+
+export const listByWorkspaceWithUrls = query({
+  args: {
+    workspaceId: v.id("tenderWorkspaces"),
+    kind: v.optional(
+      v.union(
+        v.literal("tender_source"),
+        v.literal("company_reference"),
+        v.literal("workspace_artifact"),
+        v.literal("generated_export"),
+        v.literal("form_template")
+      )
+    ),
+  },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const documents = await ctx.db
+      .query("documents")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .order("desc")
+      .take(100);
+
+    const filtered = args.kind
+      ? documents.filter((document) => (document.kind ?? "tender_source") === args.kind)
+      : documents;
+
+    return await Promise.all(
+      filtered.map(async (document) => ({
+        ...document,
+        url: await ctx.storage.getUrl(document.storageId),
+      }))
+    );
   },
 });
 

@@ -54,6 +54,15 @@ export default defineSchema({
         ocrMethod: v.optional(v.string()),
       })
     ),
+    kind: v.optional(
+      v.union(
+        v.literal("tender_source"),
+        v.literal("company_reference"),
+        v.literal("workspace_artifact"),
+        v.literal("generated_export"),
+        v.literal("form_template")
+      )
+    ),
     geminiFileResourceName: v.optional(v.string()), // Gemini File Search file resource name
     geminiStatus: v.optional(
       v.union(
@@ -64,6 +73,19 @@ export default defineSchema({
       )
     ),
     bundleId: v.optional(v.id("bundles")),
+    profileId: v.optional(v.id("companyProfiles")),
+    workspaceId: v.optional(v.id("tenderWorkspaces")),
+    documentCategory: v.optional(v.string()),
+    approvalStatus: v.optional(
+      v.union(
+        v.literal("draft"),
+        v.literal("approved"),
+        v.literal("expired"),
+        v.literal("rejected")
+      )
+    ),
+    expiresAt: v.optional(v.number()),
+    sourceDocumentId: v.optional(v.id("documents")),
     createdBy: v.string(), // Clerk user ID
     organizationId: v.optional(v.string()),
     createdAt: v.number(),
@@ -73,6 +95,9 @@ export default defineSchema({
     .index("by_created_by", ["createdBy"])
     .index("by_status", ["status"])
     .index("by_bundle", ["bundleId"])
+    .index("by_kind", ["kind"])
+    .index("by_profile", ["profileId"])
+    .index("by_workspace", ["workspaceId"])
     .index("by_organization", ["organizationId"]),
 
   /**
@@ -251,6 +276,26 @@ export default defineSchema({
       v.literal("other")
     ),
     description: v.string(),
+    normalizedName: v.optional(v.string()),
+    documentCategoryNeeded: v.optional(
+      v.union(
+        v.literal("administrative"),
+        v.literal("technical"),
+        v.literal("financial"),
+        v.literal("commercial"),
+        v.literal("legal"),
+        v.literal("bee"),
+        v.literal("sbd_form"),
+        v.literal("other")
+      )
+    ),
+    dueStage: v.optional(
+      v.union(v.literal("response"), v.literal("award"), v.literal("contract"))
+    ),
+    formFillNeeded: v.optional(v.boolean()),
+    reviewStatus: v.optional(
+      v.union(v.literal("draft"), v.literal("verified"), v.literal("rejected"))
+    ),
     mandatory: v.boolean(),
     status: v.union(
       v.literal("met"),
@@ -259,6 +304,17 @@ export default defineSchema({
       v.literal("not_met")
     ),
     confidence: v.optional(v.number()),
+    evidence: v.optional(
+      v.array(
+        v.object({
+          documentId: v.optional(v.id("documents")),
+          page: v.optional(v.number()),
+          quote: v.optional(v.string()),
+          section: v.optional(v.string()),
+          confidence: v.optional(v.number()),
+        })
+      )
+    ),
     notes: v.optional(v.string()),
     createdAt: v.number(),
     organizationId: v.optional(v.string()),
@@ -266,6 +322,7 @@ export default defineSchema({
     .index("by_opportunity", ["opportunityId"])
     .index("by_type", ["type"])
     .index("by_status", ["status"])
+    .index("by_review_status", ["reviewStatus"])
     .index("by_organization", ["organizationId"]),
 
   /**
@@ -321,7 +378,12 @@ export default defineSchema({
       v.literal("bundle_detect"),
       v.literal("gap_analysis"),
       v.literal("export_data"),
-      v.literal("notification_digest")
+      v.literal("notification_digest"),
+      v.literal("build_tender_workspace"),
+      v.literal("match_company_documents"),
+      v.literal("extract_form_template"),
+      v.literal("fill_form_preview"),
+      v.literal("export_workspace_zip")
     ),
     input: v.any(), // Type-specific input
     output: v.optional(v.any()), // Type-specific output
@@ -423,6 +485,364 @@ export default defineSchema({
     .index("by_target", ["targetType", "targetId"])
     .index("by_author", ["authorId"])
     .index("by_created_at", ["createdAt"]),
+
+  /**
+   * Canonical company profile
+   */
+  companyProfiles: defineTable({
+    workspaceKey: v.string(),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("active"),
+      v.literal("archived")
+    ),
+    legal: v.object({
+      legalName: v.optional(v.string()),
+      tradingName: v.optional(v.string()),
+      registrationNumber: v.optional(v.string()),
+      incorporationCountry: v.optional(v.string()),
+    }),
+    tax: v.object({
+      vatNumber: v.optional(v.string()),
+      taxNumber: v.optional(v.string()),
+      csdNumber: v.optional(v.string()),
+    }),
+    banking: v.object({
+      accountHolderName: v.optional(v.string()),
+      bankName: v.optional(v.string()),
+      accountNumber: v.optional(v.string()),
+      branchCode: v.optional(v.string()),
+      accountType: v.optional(v.string()),
+    }),
+    addresses: v.object({
+      physicalAddress: v.optional(v.string()),
+      postalAddress: v.optional(v.string()),
+    }),
+    contacts: v.object({
+      primaryContactName: v.optional(v.string()),
+      primaryContactEmail: v.optional(v.string()),
+      primaryContactPhone: v.optional(v.string()),
+    }),
+    signatory: v.object({
+      fullName: v.optional(v.string()),
+      title: v.optional(v.string()),
+      email: v.optional(v.string()),
+      phone: v.optional(v.string()),
+    }),
+    compliance: v.object({
+      beeLevel: v.optional(v.string()),
+      cidbGrade: v.optional(v.string()),
+      oemSummary: v.optional(v.string()),
+    }),
+    createdBy: v.string(),
+    organizationId: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_workspace_key", ["workspaceKey"])
+    .index("by_status", ["status"])
+    .index("by_organization", ["organizationId"]),
+
+  /**
+   * Field-level verification state for company profile
+   */
+  companyFieldVerifications: defineTable({
+    profileId: v.id("companyProfiles"),
+    fieldPath: v.string(),
+    valueSnapshot: v.string(),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("verified"),
+      v.literal("superseded"),
+      v.literal("rejected")
+    ),
+    sourceDocumentId: v.optional(v.id("documents")),
+    sourcePage: v.optional(v.number()),
+    sourceQuote: v.optional(v.string()),
+    sourceSnippetHash: v.optional(v.string()),
+    verifiedBy: v.optional(v.string()),
+    verifiedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_profile_field", ["profileId", "fieldPath"])
+    .index("by_organization", ["organizationId"]),
+
+  /**
+   * Approved reusable company documents
+   */
+  companyDocuments: defineTable({
+    profileId: v.id("companyProfiles"),
+    documentId: v.id("documents"),
+    category: v.union(
+      v.literal("registration"),
+      v.literal("tax"),
+      v.literal("bee"),
+      v.literal("banking"),
+      v.literal("financials"),
+      v.literal("proof_of_address"),
+      v.literal("oem_letter"),
+      v.literal("technical_datasheet"),
+      v.literal("company_profile"),
+      v.literal("sbd_attachment"),
+      v.literal("other")
+    ),
+    title: v.string(),
+    issuer: v.optional(v.string()),
+    referenceNumber: v.optional(v.string()),
+    validityStatus: v.union(
+      v.literal("draft"),
+      v.literal("approved"),
+      v.literal("expired"),
+      v.literal("rejected")
+    ),
+    effectiveFrom: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+    notes: v.optional(v.string()),
+    approvedBy: v.optional(v.string()),
+    approvedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_document", ["documentId"])
+    .index("by_validity", ["validityStatus"])
+    .index("by_organization", ["organizationId"]),
+
+  /**
+   * Tender workspace assembly state
+   */
+  tenderWorkspaces: defineTable({
+    opportunityId: v.id("opportunities"),
+    bundleId: v.optional(v.id("bundles")),
+    profileId: v.id("companyProfiles"),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("assembling"),
+      v.literal("ready_for_review"),
+      v.literal("blocked"),
+      v.literal("approved"),
+      v.literal("exported")
+    ),
+    readiness: v.union(v.literal("red"), v.literal("yellow"), v.literal("green")),
+    missingMandatoryCount: v.number(),
+    criticalConflictCount: v.number(),
+    exportDocumentId: v.optional(v.id("documents")),
+    summary: v.optional(v.string()),
+    createdBy: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_opportunity", ["opportunityId"])
+    .index("by_status", ["status"])
+    .index("by_created_at", ["createdAt"])
+    .index("by_organization", ["organizationId"]),
+
+  workspaceItems: defineTable({
+    workspaceId: v.id("tenderWorkspaces"),
+    path: v.string(),
+    itemType: v.union(
+      v.literal("folder"),
+      v.literal("file"),
+      v.literal("placeholder")
+    ),
+    sourceType: v.optional(
+      v.union(
+        v.literal("company_document"),
+        v.literal("tender_document"),
+        v.literal("generated"),
+        v.literal("manual")
+      )
+    ),
+    sourceDocumentId: v.optional(v.id("documents")),
+    companyDocumentId: v.optional(v.id("companyDocuments")),
+    requirementId: v.optional(v.id("requirements")),
+    status: v.union(
+      v.literal("attached"),
+      v.literal("missing"),
+      v.literal("generated"),
+      v.literal("blocked")
+    ),
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_path", ["workspaceId", "path"])
+    .index("by_organization", ["organizationId"]),
+
+  requirementMatches: defineTable({
+    workspaceId: v.id("tenderWorkspaces"),
+    requirementId: v.id("requirements"),
+    status: v.union(
+      v.literal("matched"),
+      v.literal("partial"),
+      v.literal("missing"),
+      v.literal("conflict")
+    ),
+    confidence: v.optional(v.number()),
+    selectedCompanyDocumentId: v.optional(v.id("companyDocuments")),
+    rationale: v.optional(v.string()),
+    sourceEvidence: v.optional(
+      v.object({
+        documentId: v.optional(v.id("documents")),
+        page: v.optional(v.number()),
+        quote: v.optional(v.string()),
+      })
+    ),
+    companyEvidence: v.optional(
+      v.object({
+        documentId: v.optional(v.id("documents")),
+        page: v.optional(v.number()),
+        quote: v.optional(v.string()),
+      })
+    ),
+    overrideStatus: v.optional(
+      v.union(
+        v.literal("none"),
+        v.literal("manual_selected"),
+        v.literal("manual_rejected")
+      )
+    ),
+    reviewedBy: v.optional(v.string()),
+    reviewedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_requirement", ["requirementId"])
+    .index("by_workspace_requirement", ["workspaceId", "requirementId"])
+    .index("by_organization", ["organizationId"]),
+
+  formTemplates: defineTable({
+    sourceDocumentChecksum: v.string(),
+    sourceFilename: v.string(),
+    mimeType: v.string(),
+    templateType: v.union(
+      v.literal("fillable_pdf"),
+      v.literal("non_fillable_pdf"),
+      v.literal("unsupported")
+    ),
+    fields: v.array(
+      v.object({
+        key: v.string(),
+        label: v.optional(v.string()),
+        fieldType: v.optional(
+          v.union(
+            v.literal("text"),
+            v.literal("checkbox"),
+            v.literal("radio"),
+            v.literal("dropdown"),
+            v.literal("signature"),
+            v.literal("date"),
+            v.literal("unknown")
+          )
+        ),
+        required: v.optional(v.boolean()),
+      })
+    ),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("mapped"),
+      v.literal("manual_required")
+    ),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_checksum", ["sourceDocumentChecksum"])
+    .index("by_status", ["status"]),
+
+  formFieldMappings: defineTable({
+    templateId: v.id("formTemplates"),
+    fieldKey: v.string(),
+    sourceType: v.union(
+      v.literal("company_profile"),
+      v.literal("tender_fact"),
+      v.literal("manual")
+    ),
+    sourcePath: v.optional(v.string()),
+    validationType: v.optional(
+      v.union(
+        v.literal("exact_verified"),
+        v.literal("email"),
+        v.literal("phone"),
+        v.literal("date"),
+        v.literal("free_text")
+      )
+    ),
+    requiredApproval: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_template", ["templateId"])
+    .index("by_template_field", ["templateId", "fieldKey"]),
+
+  formRuns: defineTable({
+    workspaceId: v.id("tenderWorkspaces"),
+    sourceDocumentId: v.id("documents"),
+    templateId: v.optional(v.id("formTemplates")),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("filled_preview"),
+      v.literal("manual_required"),
+      v.literal("approved"),
+      v.literal("blocked")
+    ),
+    outputDocumentId: v.optional(v.id("documents")),
+    fields: v.array(
+      v.object({
+        fieldKey: v.string(),
+        resolvedValue: v.optional(v.string()),
+        sourceType: v.optional(
+          v.union(
+            v.literal("company_profile"),
+            v.literal("tender_fact"),
+            v.literal("manual")
+          )
+        ),
+        sourcePath: v.optional(v.string()),
+        evidenceDocumentId: v.optional(v.id("documents")),
+        evidencePage: v.optional(v.number()),
+        evidenceQuote: v.optional(v.string()),
+        validationStatus: v.union(
+          v.literal("valid"),
+          v.literal("invalid"),
+          v.literal("unverified"),
+          v.literal("conflict")
+        ),
+        requiresReview: v.boolean(),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_source_document", ["sourceDocumentId"])
+    .index("by_organization", ["organizationId"]),
+
+  auditEvents: defineTable({
+    entityType: v.union(
+      v.literal("company_profile"),
+      v.literal("company_document"),
+      v.literal("requirement"),
+      v.literal("workspace"),
+      v.literal("form_run")
+    ),
+    entityId: v.string(),
+    action: v.string(),
+    actorId: v.string(),
+    payload: v.optional(v.any()),
+    createdAt: v.number(),
+    organizationId: v.optional(v.string()),
+  })
+    .index("by_entity", ["entityType", "entityId"])
+    .index("by_created_at", ["createdAt"])
+    .index("by_organization", ["organizationId"]),
 
   /**
    * Config table (for storing system configuration like Gemini File Search store name)

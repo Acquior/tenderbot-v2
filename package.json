@@ -31,6 +31,8 @@
     "@azure-rest/ai-document-intelligence": "^1.1.0",
     "@google/generative-ai": "^0.24.1",
     "docx": "^9.5.1",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5"
   }
 }

@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
-import type { Doc, Id } from "@convex/_generated/dataModel";
+import type { Doc } from "@convex/_generated/dataModel";
 import type { TenderAnalysis } from "@tenderbot/contracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +30,7 @@ interface DocumentsManagerProps {
   opportunity: Doc<"opportunities">;
   analysisData?: TenderAnalysis;
   bundle?: Doc<"bundles"> | null;
-  sourceDocuments?: Doc<"documents">[] | undefined; // The simplified type from listByBundleWithUrls
+  sourceDocuments?: Array<Doc<"documents"> & { url?: string | null }> | undefined;
 }
 
 export function DocumentsManager({
@@ -48,6 +48,7 @@ export function DocumentsManager({
     name: string;
     mandatory: boolean;
     instructions?: string;
+    category?: "administrative" | "technical" | "financial" | "commercial" | "legal" | "bee" | "sbd_form" | "other";
     source?: { documentId?: string; page?: number; quote?: string };
   };
 
@@ -67,7 +68,21 @@ export function DocumentsManager({
 
   // Start editing - copy current list to edit state
   const handleStartEditing = () => {
-    setEditedChecklist([...activeChecklist]);
+    setEditedChecklist(
+      activeChecklist.map((item) => ({
+        name: item.name,
+        mandatory: item.mandatory,
+        instructions: item.instructions ?? undefined,
+        category: "category" in item ? item.category ?? undefined : undefined,
+        source: item.source
+          ? {
+              documentId: item.source.documentId ?? undefined,
+              page: item.source.page ?? undefined,
+              quote: item.source.quote ?? undefined,
+            }
+          : undefined,
+      }))
+    );
     setIsEditingChecklist(true);
   };
 
@@ -166,7 +181,7 @@ export function DocumentsManager({
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {sourceDocuments.map((doc: any) => (
+              {sourceDocuments.map((doc) => (
                 <div
                   key={doc._id}
                   className="flex items-center justify-between p-3 border border-border/40 rounded-lg hover:bg-accent/50 transition-colors"
@@ -387,4 +402,3 @@ export function DocumentsManager({
     </div>
   );
 }
-

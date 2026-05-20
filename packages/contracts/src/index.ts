@@ -6,6 +6,12 @@ export * from "./chunk";
 export * from "./opportunity";
 export * from "./analysis";
 export * from "./tenders";
+export * from "./company-profile";
+export * from "./company-document";
+export * from "./tender-workspace";
+export * from "./form-template";
+export * from "./form-run";
+export * from "./audit";
 
 // Bundle schemas
 export * from "./bundle";

@@ -38,12 +38,28 @@ export const RequirementSchema = z.object({
   mandatory: z.boolean().nullable().optional().default(false),
   status: z.enum(["met", "partial", "unknown", "not_met"]).nullable().optional().default("unknown"),
   confidence: z.number().nullable().optional(),
+  normalizedName: z.string().nullable().optional(),
+  documentCategoryNeeded: z.enum([
+    "administrative",
+    "technical",
+    "financial",
+    "commercial",
+    "legal",
+    "bee",
+    "sbd_form",
+    "other",
+  ]).nullable().optional(),
+  dueStage: z.enum(["response", "award", "contract"]).nullable().optional(),
+  formFillNeeded: z.boolean().nullable().optional(),
+  reviewStatus: z.enum(["draft", "verified", "rejected"]).nullable().optional(),
   evidence: z
     .array(
       z.object({
         documentId: z.string().nullable().optional(),
         page: z.number().int().nullable().optional(),
         quote: z.string().nullable().optional(),
+        section: z.string().nullable().optional(),
+        confidence: z.number().nullable().optional(),
       })
     )
     .nullable()
@@ -57,6 +73,11 @@ export const RequirementSchema = z.object({
   mandatory: data.mandatory ?? false,
   status: data.status || "unknown",
   confidence: data.confidence,
+  normalizedName: data.normalizedName,
+  documentCategoryNeeded: data.documentCategoryNeeded || "other",
+  dueStage: data.dueStage || "response",
+  formFillNeeded: data.formFillNeeded ?? false,
+  reviewStatus: data.reviewStatus || "draft",
   evidence: data.evidence,
   notes: data.notes,
 }));

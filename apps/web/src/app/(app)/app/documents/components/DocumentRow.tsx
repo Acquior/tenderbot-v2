@@ -52,7 +52,10 @@ export function DocumentRow({ document }: DocumentRowProps) {
   const hasError = document.status === "failed";
   
   // Calculate progress percentage based on job if available
-  const progressPercentage = displayJob ? Math.round((displayJob.completedSteps / displayJob.totalSteps) * 100) : 0;
+  const progressPercentage =
+    displayJob?.progress?.total && displayJob.progress.total > 0
+      ? Math.round((displayJob.progress.current / displayJob.progress.total) * 100)
+      : 0;
 
   return (
     <TableRow className="group hover:bg-muted/40">
@@ -97,7 +100,7 @@ export function DocumentRow({ document }: DocumentRowProps) {
                 </Link>
              ) : (
                <span className="text-xs text-muted-foreground">
-                 {bundle.status === "analyzing" ? "Analyzing bundle..." : "No opportunity linked"}
+                 {bundle.status === "processing" ? "Analyzing bundle..." : "No opportunity linked"}
                </span>
              )}
            </div>

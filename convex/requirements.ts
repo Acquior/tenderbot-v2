@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { query } from "./_generated/server";
+import { internalQuery, query } from "./_generated/server";
 import { requireUser } from "./auth";
 
 /**
@@ -21,5 +21,17 @@ export const listByOpportunity = query({
       .take(100);
 
     return requirements;
+  },
+});
+
+export const listByOpportunityInternal = internalQuery({
+  args: {
+    opportunityId: v.id("opportunities"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("requirements")
+      .withIndex("by_opportunity", (q) => q.eq("opportunityId", args.opportunityId))
+      .take(500);
   },
 });

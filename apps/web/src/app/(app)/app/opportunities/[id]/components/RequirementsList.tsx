@@ -156,6 +156,34 @@ export function RequirementsList({ requirements }: RequirementsListProps) {
                             Confidence: {Math.round(req.confidence * 100)}%
                           </p>
                         )}
+                        {(req.reviewStatus || (req.evidence && req.evidence.length > 0)) && (
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            {req.reviewStatus && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Review: {req.reviewStatus}
+                              </Badge>
+                            )}
+                            {req.formFillNeeded && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Form fill needed
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+                        {req.evidence && req.evidence.length > 0 && (
+                          <div className="rounded-md border border-border/40 bg-background/40 p-2">
+                            <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                              Evidence
+                            </p>
+                            {req.evidence.slice(0, 2).map((evidence, index) => (
+                              <div key={index} className="mt-2 text-xs text-muted-foreground">
+                                {evidence.page && <span>Page {evidence.page}. </span>}
+                                {evidence.section && <span>{evidence.section}. </span>}
+                                {evidence.quote || "No quote captured."}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

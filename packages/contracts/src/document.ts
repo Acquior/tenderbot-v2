@@ -17,6 +17,25 @@ export const DocumentStatus = z.enum([
 
 export type DocumentStatus = z.infer<typeof DocumentStatus>;
 
+export const DocumentKindSchema = z.enum([
+  "tender_source",
+  "company_reference",
+  "workspace_artifact",
+  "generated_export",
+  "form_template",
+]);
+
+export type DocumentKind = z.infer<typeof DocumentKindSchema>;
+
+export const DocumentApprovalStatusSchema = z.enum([
+  "draft",
+  "approved",
+  "expired",
+  "rejected",
+]);
+
+export type DocumentApprovalStatus = z.infer<typeof DocumentApprovalStatusSchema>;
+
 /**
  * Document metadata and storage information
  */
@@ -27,6 +46,7 @@ export const DocumentSchema = z.object({
   size: z.number().int().positive(),
   storageKey: z.string(), // Convex storage ID or R2 key
   status: DocumentStatus,
+  kind: DocumentKindSchema.default("tender_source"),
   checksums: z.object({
     md5: z.string().optional(),
     sha256: z.string().optional(),
@@ -44,6 +64,12 @@ export const DocumentSchema = z.object({
   createdAt: z.number().int(), // Unix timestamp
   updatedAt: z.number().int().optional(),
   bundleId: z.string().optional(), // Link to tender bundle
+  profileId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  documentCategory: z.string().optional(),
+  approvalStatus: DocumentApprovalStatusSchema.optional(),
+  expiresAt: z.number().int().optional(),
+  sourceDocumentId: z.string().optional(),
 });
 
 export type Document = z.infer<typeof DocumentSchema>;
@@ -56,6 +82,10 @@ export const DocumentUploadRequestSchema = z.object({
   mimeType: z.string(),
   size: z.number().int().positive(),
   bundleId: z.string().optional(),
+  kind: DocumentKindSchema.optional(),
+  profileId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  documentCategory: z.string().optional(),
 });
 
 export type DocumentUploadRequest = z.infer<typeof DocumentUploadRequestSchema>;

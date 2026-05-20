@@ -1,6 +1,12 @@
 import { CohereClient } from "cohere-ai";
 import { RetrievalResult } from "./retrieval";
 
+// Cohere's rerank-v4.0 models allow much larger query+document context windows
+// than v3.5, but this client does not have token-accurate truncation. Keep a
+// conservative per-document character budget so we reduce truncation without
+// assuming that 32k characters === 32k tokens.
+const RERANK_MAX_DOCUMENT_CHARS = 32_000;
+
 /**
  * Reranking client using Cohere Rerank
  */
@@ -8,7 +14,7 @@ export class RerankClient {
   private cohere: CohereClient;
   private model: string;
 
-  constructor(apiKey: string, model: string = "rerank-v3.5") {
+  constructor(apiKey: string, model: string = "rerank-v4.0-pro") {
     this.cohere = new CohereClient({ token: apiKey });
     this.model = model;
   }
@@ -22,9 +28,8 @@ export class RerankClient {
     topK?: number
   ): Promise<RetrievalResult[]> {
     try {
-      // Cohere rerank has a context length limit (~4k tokens per document)
-      // Truncate long documents to fit
-      const documents = results.map((r) => this.truncateText(r.text, 4000));
+      // Conservative char-based truncation for a model with a larger token budget.
+      const documents = results.map((r) => this.truncateText(r.text, RERANK_MAX_DOCUMENT_CHARS));
 
       const response = await this.cohere.rerank({
         query,
@@ -47,7 +52,8 @@ export class RerankClient {
   }
 
   /**
-   * Truncate text to approximate character limit
+   * Truncate text to a conservative character limit.
+   * This is intentionally char-based, not token-accurate.
    */
   private truncateText(text: string, maxChars: number): string {
     if (text.length <= maxChars) {
